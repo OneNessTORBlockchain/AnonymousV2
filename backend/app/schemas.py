@@ -104,7 +104,7 @@ class SwarmStartIn(BaseModel):
     objective: str = Field(min_length=4, max_length=8_000)
     session_id: str | None = None
     categories: list[str] = Field(default_factory=list)
-    lanes: int = Field(default=6, ge=1, le=25)
+    lanes: int = Field(default=5, ge=1, le=5)
     rounds: int = Field(default=2, ge=1, le=50)
     #: Keep re-planning rounds until the strategist reports the objective
     #: answered.  ``rounds`` then becomes the hard cap instead of the target.

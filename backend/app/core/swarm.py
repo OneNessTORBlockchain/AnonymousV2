@@ -2368,6 +2368,9 @@ class SwarmManager:
         lanes = lanes_per_category or self.settings.swarm_agents_per_category
         if agents_per_model:
             lanes = agents_per_model
+        # One lane per role is a squad; five categories x five lanes is the
+        # 25-agent ceiling, so the classic path can never exceed MAX_LANES.
+        lanes = max(1, min(FLEET_GROUP_SIZE, int(lanes)))
         if rounds is None or int(rounds) <= 0:
             if unlimited:
                 rounds_value = int(self.settings.fleet_unlimited_rounds)
