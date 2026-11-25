@@ -1,0 +1,80 @@
+ONENESS TECHNOLOGIES NON-COMMERCIAL SOURCE-AVAILABLE LICENCE
+Version 1.0
+
+Copyright (c) 2026 OneNess Technologies
+Project home: https://www.onenesstech.ca
+
+This licence applies to the software in this repository ("Anonymous V2") and to
+every file distributed with it, unless a file states otherwise.
+
+1. GRANT
+
+   Subject to the terms below, OneNess Technologies grants you a worldwide,
+   royalty-free, non-exclusive licence to use, copy, modify, merge, publish and
+   distribute the software, in source or compiled form, for Non-Commercial
+   Purposes only.
+
+2. NON-COMMERCIAL PURPOSES
+
+   "Non-Commercial Purposes" means purposes that are not primarily intended for
+   or directed toward commercial advantage or monetary compensation. In
+   particular, you may not:
+
+   a. sell, rent, lease, sublicense or otherwise charge for the software or for
+      access to it, or bundle it into a paid product or paid service;
+   b. use the software to deliver paid consulting, penetration-testing,
+      managed-security or similar services to third parties;
+   c. use the software in the internal operations of a for-profit organisation
+      where that use directly supports revenue generation;
+   d. remove, obscure or circumvent this licence, the copyright notice or any
+      attribution to OneNess Technologies.
+
+   Internal evaluation, research, teaching, personal projects, non-profit and
+   open-source work are Non-Commercial Purposes.
+
+3. CONDITIONS
+
+   a. This licence and the copyright notice must be included in every copy of
+      the software, in whole or in part.
+   b. Modified versions must carry a prominent notice stating that they were
+      modified, and must not be represented as the original software.
+   c. You may not impose any further restriction on the rights granted here.
+   d. No trademark rights are granted. The names "Anonymous V2" and "OneNess
+      Technologies" and the marks in browser.png may only be used to refer to
+      this project and its origin.
+
+4. COMMERCIAL LICENSING
+
+   Commercial use requires a separate written licence from OneNess
+   Technologies. Enquiries: https://www.onenesstech.ca
+
+5. TERMINATION
+
+   This licence terminates automatically if you breach any of its terms.
+   On termination you must stop all use and distribution of the software and
+   destroy or delete all copies in your control.
+
+6. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT.
+
+7. LIMITATION OF LIABILITY
+
+   IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+   OR OTHER DEALINGS IN THE SOFTWARE.
+
+8. LAWFUL USE
+
+   The software drives offensive security tooling. You are solely responsible
+   for ensuring that every use is lawful and that you hold written authorisation
+   for every system you test. OneNess Technologies does not authorise, and is
+   not responsible for, any unauthorised or unlawful use.
+
+9. ACCEPTANCE
+
+   Using, copying, modifying or distributing the software means you accept this
+   licence. If you do not accept it, do not use the software.

@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Anonymous V2 — agent workbench</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="icon" type="image/png" href="/browser.png" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-logo" src="/browser.png" alt="Anonymous V2" width="34" height="34" />
+          <div>
+            <h1>ANONYMOUS <span>V2</span></h1>
+            <p>free-agency agent workbench</p>
+          </div>
+        </div>
+        <button id="sidebarToggle" class="ghost mini sidebar-toggle" type="button" title="collapse / expand the sidebar">◧</button>
+        <div class="status" id="status">
+          <span class="pill" data-key="api" title="backend API"><i></i>api</span>
+          <span class="pill" data-key="provider" title="model provider"><i></i>cloud</span>
+          <span class="pill" data-key="ollama" title="model listener"><i></i>ollama</span>
+          <span class="pill" data-key="sandbox" title="kali container"><i></i>sandbox</span>
+        </div>
+        <div class="meta">
+          <span id="modelName">—</span>
+          <span class="dot">·</span>
+          <span id="containerName">container ?</span>
+        </div>
+      </header>
+
+      <aside class="sidebar">
+        <section>
+          <h2>Agents</h2>
+          <div id="agents" class="agents"></div>
+          <p id="fleetLine" class="hint fleet-line">fleet: —</p>
+        </section>
+
+        <section>
+          <h2>
+            Targets
+            <button id="clearTargets" class="ghost mini" type="button">clear</button>
+          </h2>
+          <form id="targetForm" class="target-form">
+            <input id="targetInput" placeholder="host, URL, CIDR…" autocomplete="off" spellcheck="false" />
+            <button class="mini" type="submit">add</button>
+          </form>
+          <ul id="targets" class="targets"></ul>
+          <p class="hint">Context only — nothing is gated. Targets are operator-attested: agents work them, they never question ownership.</p>
+        </section>
+
+        <section>
+          <h2>
+            Swarm
+            <button id="swarmRefresh" class="ghost mini" type="button">refresh</button>
+          </h2>
+          <form id="swarmForm" class="swarm-form">
+            <textarea
+              id="swarmObjective"
+              rows="2"
+              placeholder="one objective for the whole fleet…"
+              spellcheck="true"
+            ></textarea>
+            <div id="swarmCategories" class="swarm-chips"></div>
+            <div class="swarm-row">
+              <label><input id="swarmFleet" type="checkbox" checked /> fleet</label>
+              <label>groups <select id="swarmLanes" title="groups of five agents (1-5 => 5/10/15/20/25 agents)"></select></label>
+              <label>rounds <input id="swarmRounds" type="number" min="1" max="50" step="1" value="2" title="rounds before synthesis (1-50, or the cap when until complete)" /></label>
+            </div>
+            <div class="swarm-row">
+              <label class="until"><input id="swarmUntilComplete" type="checkbox" /> until done (no cap)</label>
+              <button class="mini" type="submit">launch</button>
+            </div>
+          </form>
+          <p class="hint">Ctrl+Enter launches. fleet = whole squads of five (recon, web, exploit, coder, reporter): 1–5 groups means 5/10/15/20/25 agents at once. categories/lanes apply only when fleet is unticked. “until done” keeps re-planning until the completion gate approves, with no round cap.</p>
+          <ul id="swarmRuns" class="swarm-runs"></ul>
+        </section>
+
+        <section>
+          <h2>
+            Provider
+            <button id="providerRefresh" class="ghost mini" type="button">refresh</button>
+          </h2>
+          <form id="providerForm" class="provider-form">
+            <label>label <input id="providerLabel" placeholder="openai · ollama · custom" autocomplete="off" spellcheck="false" /></label>
+            <label>endpoint <input id="providerBase" placeholder="https://ollama.com/v1" autocomplete="off" spellcheck="false" /></label>
+            <label>model <input id="providerModel" placeholder="deepseek-v4.1-flash:cloud" autocomplete="off" spellcheck="false" /></label>
+            <label>api key <input id="providerKey" type="password" placeholder="unchanged" autocomplete="off" /></label>
+            <button class="mini" type="submit">apply and test</button>
+          </form>
+          <p id="providerHint" class="hint">—</p>
+        </section>
+
+        <section class="workspace">
+          <h2>
+            Workspace
+            <span class="head-actions">
+              <button id="workspaceRefresh" class="ghost mini" type="button">refresh</button>
+              <button id="workspaceDownloadAll" class="ghost mini" type="button" title="download the whole /work tree as a zip">zip</button>
+              <button id="workspaceWipe" class="ghost mini danger" type="button" title="delete every file and folder inside the workspace">wipe</button>
+            </span>
+          </h2>
+          <div id="dropzone" class="dropzone">
+            <p>drop files or folders here</p>
+            <div class="dropzone-actions">
+              <label class="mini file-btn">files<input id="fileInput" type="file" multiple hidden /></label>
+              <label class="mini file-btn">folder<input id="folderInput" type="file" webkitdirectory multiple hidden /></label>
+            </div>
+          </div>
+          <ul id="uploadQueue" class="upload-queue"></ul>
+          <ul id="workspaceFiles" class="workspace-files"></ul>
+          <p id="workspaceHint" class="hint">Uploads land in /work/uploads/&lt;batch&gt;; agent output appears under /work. Click a file to download it, or use zip for the whole tree.</p>
+        </section>
+
+        <section class="grow">
+          <h2>
+            Sessions
+            <button id="newSession" class="ghost mini" type="button">new</button>
+          </h2>
+          <ul id="sessions" class="sessions"></ul>
+        </section>
+
+        <section class="memory">
+          <h2>
+            Memory
+            <button id="memoryRefresh" class="ghost mini" type="button">refresh</button>
+          </h2>
+          <form id="memoryForm" class="memory-form">
+            <select id="memoryKind" title="what kind of lesson">
+              <option value="technique" selected>technique</option>
+              <option value="tool">tool</option>
+              <option value="skill">skill</option>
+              <option value="error">error</option>
+              <option value="strategy">strategy</option>
+              <option value="lesson">lesson</option>
+            </select>
+            <input id="memoryTitle" placeholder="title - e.g. ffuf hangs behind Tor" autocomplete="off" />
+            <textarea id="memoryBody" rows="2" placeholder="exact command, exact error, the fix…"></textarea>
+            <button class="mini" type="submit">save</button>
+          </form>
+          <p id="memoryStats" class="hint">knowledge base: —</p>
+          <ul id="memoryList" class="memory-list"></ul>
+        </section>
+
+        <section class="skills">
+          <h2>
+            Skills
+            <button id="skillsRefresh" class="ghost mini" type="button">refresh</button>
+          </h2>
+          <ul id="skillList" class="skill-list"></ul>
+          <p class="hint">
+            Every model can write a skill (skill_create), install it into /work/skills and run it
+            with skill_run. The operator can run or delete one here.
+          </p>
+        </section>
+      </aside>
+
+      <div
+        id="sidebarResizer"
+        class="resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="resize the sidebar"
+        tabindex="0"
+        title="drag to resize the sidebar (double-click resets)"
+      ></div>
+
+      <main class="chat">
+        <div id="transcript" class="transcript">
+          <div class="empty" id="empty">
+            <h3>Mission control</h3>
+            <p>
+              Pick an agent, describe the objective and send. The captain can delegate to
+              recon, web, exploit, coder or reporter — every target is attested, so the work starts immediately.
+            </p>
+            <p class="mono">sandbox: docker exec → /work · tools are the only limits</p>
+          </div>
+        </div>
+
+        <form id="composer" class="composer">
+          <textarea
+            id="message"
+            rows="3"
+            placeholder="Describe the objective…  (Enter to send, Shift+Enter for a newline)"
+            spellcheck="true"
+          ></textarea>
+          <div class="composer-row">
+            <select id="agentSelect" title="starting agent"></select>
+            <label class="composer-field" title="how many squads of five agents work this task (1-5 => 5-25 agents)">
+              squads <select id="agentsSelect"></select>
+            </label>
+            <select id="modeSelect" title="stance">
+              <option value="exploit" selected>exploit</option>
+              <option value="intrusive">hands-on</option>
+              <option value="recon">discovery-first</option>
+            </select>
+            <label class="composer-field" title="fleet rounds for this turn (1-50)">
+              rounds <input id="roundsInput" type="number" min="1" max="50" step="1" value="2" />
+            </label>
+            <label class="composer-field check" title="keep re-planning until the fleet reports the mission complete (no round cap)">
+              <input id="untilComplete" type="checkbox" /> until done
+            </label>
+            <label class="mini file-btn" title="upload files from this computer straight into the sandbox; the chat message will reference them">attach<input id="chatFileInput" type="file" multiple hidden /></label>
+            <label class="mini file-btn" title="upload a whole folder into the sandbox">folder<input id="chatFolderInput" type="file" webkitdirectory multiple hidden /></label>
+            <span class="spacer"></span>
+            <span class="ticker" id="ticker"></span>
+            <button type="button" id="stop" class="ghost" hidden>stop</button>
+            <button type="submit" id="send">send</button>
+          </div>
+        </form>
+      </main>
+
+      <div id="swarmPanel" class="swarm-panel" hidden>
+        <div class="swarm-card">
+          <header class="swarm-head">
+            <div>
+              <h3 id="swarmTitle">swarm</h3>
+              <p id="swarmMeta" class="mono">—</p>
+            </div>
+            <div class="swarm-actions">
+              <button id="swarmStop" class="ghost mini" type="button">stop</button>
+              <button id="swarmClose" class="ghost mini" type="button">close</button>
+            </div>
+          </header>
+          <p id="swarmObjectiveView" class="swarm-objective"></p>
+          <div id="swarmLanesView" class="swarm-lanes"></div>
+          <div class="swarm-split">
+            <div id="swarmLog" class="swarm-log"></div>
+            <div class="swarm-side">
+              <h4>synthesis</h4>
+              <div id="swarmSynthesis"></div>
+              <form id="swarmNote" class="swarm-note">
+                <input
+                  id="swarmNoteInput"
+                  placeholder="operator note → shared board"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <button class="mini" type="submit">post</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="ctxMenu" class="ctx-menu" hidden role="menu" aria-label="file actions">
+      <button type="button" data-action="download" role="menuitem">download</button>
+      <button type="button" data-action="reference" role="menuitem">use in chat</button>
+      <button type="button" data-action="delete" class="danger" role="menuitem">delete</button>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,284 @@
+#cloud-config
+# Anonymous V2 - self-hosted GLM-5.3-Flash-Uncensored (IQ1_S) on an Azure GPU VM.
+#
+# This is the cloud-init payload consumed by tools/glm53/azure-deploy.ps1.  The
+# double-underscore tokens are substituted by the deploy script before the text is
+# handed to Azure as --custom-data.  Nothing here touches existing AV2
+# infrastructure: it is a standalone VM in the resource group the caller names.
+#
+# Differences from the Akamai flavour (tools/glm53/cloud-init.yaml), and why:
+#   * Weights live on the OS disk.  The RTX PRO 6000 sizes do have a 1.6 TiB local
+#     NVMe, but it is ephemeral: a deallocate/start cycle wipes it and the weights
+#     would be re-downloaded.  A managed OS disk survives a stop, so the 71.52 GiB
+#     is paid for once, not once per session.
+#   * No ufw.  Azure NSGs filter at the platform edge, so a second host firewall
+#     only adds a way to lock ourselves out of SSH.  The NSG is the control.
+#   * An NVIDIA driver is installed explicitly.  Azure does not ship the GRID
+#     driver on plain Ubuntu images, and the required branch depends on the card:
+#     >=525 for Ampere (A100), >=570 for Blackwell (sm_120).
+#   * The public IP is known before boot (Azure assigns it to the NIC), so Caddy
+#     is configured with an explicit site address instead of discovering it.
+#
+# Design rules baked in (unchanged):
+#   * text-only     -> mmproj-*.gguf is never fetched and --mmproj is never passed
+#   * no filters    -> no system prompt, no refusal rules, no output rewriting
+#   * not public    -> llama-server binds 127.0.0.1; Caddy terminates TLS on 443;
+#                      the NSG admits 443/22 from the operator CIDR only
+#   * cheap to undo -> one bootstrap oneshot, one service, one Caddyfile
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - build-essential
+  - cmake
+  - git
+  - curl
+  - ca-certificates
+  - gnupg
+  - jq
+  - openssl
+  - pciutils
+
+write_files:
+  # ---------------------------------------------------------------- settings --
+  - path: /etc/av2-glm53/env
+    permissions: '0600'
+    owner: root:root
+    content: |
+      MODEL_REPO=BoldingBuilds/GLM-5.3-Flash-Uncensored-GGUF
+      MODEL_FILE=GLM-5.3-Flash-Uncensored-IQ1S-00001-of-00002.gguf
+      MODEL_DIR=__MODEL_DIR__
+      MODEL_ALIAS=glm-5.3-flash-uncensored-iq1s
+      # llama-server divides -c across --parallel slots, so the total context is
+      # CTX_PER_SLOT * PARALLEL.  2 x 16384 rather than 1 x 16384 because AV2 runs
+      # several agents at once; the per-request window stays the 16K the model card
+      # and AV2's planner config assume.
+      CTX_PER_SLOT=16384
+      PORT=8080
+      PARALLEL=2
+      LLAMA_TAG=b11279
+      # Filled in by azure-deploy.ps1 from its GPU profile table: the compute
+      # capability to compile for and how many layers to put in VRAM.  sm_80
+      # (Ampere) and sm_120 (Blackwell) are not interchangeable, and a binary built
+      # for the wrong one runs on the CPU without saying so.
+      CUDA_ARCH=__CUDA_ARCH__
+      CUDA_TOOLKIT=__CUDA_TOOLKIT__
+      GPU_LAYERS=__GPU_LAYERS__
+      API_KEY=__API_KEY__
+      CADDY_SITE=__CADDY_SITE__
+      # The Hugging Face repo is public and ungated, so no token is stored here.
+      # An anonymous download is rate-limited but works; set a token only if the
+      # fetch starts returning 429 and you are willing to keep a secret on the box.
+      HF_TOKEN=
+
+  # ------------------------------------------------------------ weight pull ---
+  # Only the two IQ1_S shards are fetched (41.9 + 29.6 GiB).  The 1.05 GiB mmproj
+  # vision projector is deliberately skipped: without it the text-only path is the
+  # only path this box can serve.
+  - path: /usr/local/sbin/av2-glm53-fetch
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Download the IQ1_S shards and verify the author's SHA256SUMS entry for each
+      # file before the server is allowed to start.
+      set -euo pipefail
+      . /etc/av2-glm53/env
+      install -d -m 0755 "$MODEL_DIR"
+      cd "$MODEL_DIR"
+      base="https://huggingface.co/${MODEL_REPO}/resolve/main"
+      auth=()
+      if [ -n "${HF_TOKEN:-}" ]; then auth=(-H "Authorization: Bearer ${HF_TOKEN}"); fi
+
+      for shard in GLM-5.3-Flash-Uncensored-IQ1S-00001-of-00002.gguf \
+                   GLM-5.3-Flash-Uncensored-IQ1S-00002-of-00002.gguf; do
+        if [ -s "$shard" ]; then
+          echo "have $shard"
+          continue
+        fi
+        echo "fetching $shard"
+        curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
+             "${auth[@]}" -C - -o "$shard.part" "$base/$shard"
+        mv "$shard.part" "$shard"
+      done
+
+      if curl -fsSL "${auth[@]}" -o SHA256SUMS.txt "$base/SHA256SUMS.txt"; then
+        if grep -E 'IQ1S-0000[12]-of-00002\.gguf' SHA256SUMS.txt > SHA256SUMS.iq1s.txt; then
+          sha256sum -c SHA256SUMS.iq1s.txt
+        else
+          echo "WARNING: no IQ1_S shard entry in SHA256SUMS.txt; hashes unchecked" >&2
+        fi
+      else
+        echo "WARNING: SHA256SUMS.txt unavailable; hashes unchecked" >&2
+      fi
+
+  # ---------------------------------------------------------------- driver ----
+  - path: /usr/local/sbin/av2-glm53-driver
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Install the NVIDIA driver + CUDA toolkit from NVIDIA's own apt repo.
+      # Ubuntu's nvidia-driver-* metapackages are version-locked to the kernel and
+      # regularly lag; the CUDA repo is the supported path on Azure NC-series.
+      set -euo pipefail
+      . /etc/av2-glm53/env
+      export DEBIAN_FRONTEND=noninteractive
+
+      if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+        echo "driver already live: $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader | head -1)"
+        exit 0
+      fi
+
+      keyring=/tmp/cuda-keyring.deb
+      curl -fsSL -o "$keyring" \
+        https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+      dpkg -i "$keyring"
+      apt-get update -qq
+      # cuda-toolkit pulls in nvcc (needed to build llama.cpp) and cuda-drivers.
+      # The version is not cosmetic: Blackwell (sm_120) needs >= 12.8, Ampere is
+      # happy with 12.4, and the wrong one builds a binary that ignores the GPU.
+      apt-get install -y -qq "cuda-toolkit-${CUDA_TOOLKIT}"
+
+      modprobe nvidia || true
+      nvidia-smi -L
+      echo "driver + toolkit installed"
+
+  # ------------------------------------------------------------------ build ----
+  - path: /usr/local/sbin/av2-glm53-build
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Build llama-server with CUDA.  b11279 is the first mainline revision that
+      # names this architecture glm5-next (PR #27773); older builds reject the file.
+      set -euo pipefail
+      . /etc/av2-glm53/env
+
+      if ! command -v nvcc >/dev/null 2>&1; then
+        echo "nvcc missing - the driver step should have provided it" >&2
+        exit 1
+      fi
+
+      src=/opt/llama.cpp
+      if [ ! -d "$src/.git" ]; then
+        git clone https://github.com/ggml-org/llama.cpp "$src"
+      fi
+      cd "$src"
+      git fetch --tags --depth 1 origin || true
+      if git rev-parse --verify --quiet "refs/tags/${LLAMA_TAG}" >/dev/null; then
+        git -c advice.detachedHead=false checkout "${LLAMA_TAG}"
+      else
+        echo "tag ${LLAMA_TAG} unavailable; staying on $(git rev-parse --short HEAD)" >&2
+      fi
+      git rev-parse HEAD > /etc/av2-glm53/llama-build.txt
+
+      cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DLLAMA_CURL=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
+      cmake --build build --config Release -j"$(nproc)" -t llama-server
+      install -m 0755 build/bin/llama-server /usr/local/bin/llama-server
+      /usr/local/bin/llama-server --version | head -5 > /etc/av2-glm53/llama-version.txt
+
+  # ------------------------------------------------------------ TLS frontend ---
+  - path: /usr/local/sbin/av2-glm53-caddy
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Caddy is the only listener on 443; llama-server stays on loopback.  With no
+      # domain the site is https://<static-public-ip> and Caddy issues a certificate
+      # from its own local CA, which the relay pins via --ca-cert.
+      set -euo pipefail
+      . /etc/av2-glm53/env
+      export DEBIAN_FRONTEND=noninteractive
+
+      if ! command -v caddy >/dev/null 2>&1; then
+        apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+          | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+          > /etc/apt/sources.list.d/caddy-stable.list
+        apt-get update -qq
+        apt-get install -y -qq caddy
+      fi
+
+      cat > /etc/caddy/Caddyfile <<EOF
+      {
+        auto_https disable_redirects
+      }
+
+      ${CADDY_SITE} {
+        tls internal
+        encode zstd gzip
+        reverse_proxy 127.0.0.1:${PORT} {
+          flush_interval -1
+          transport http {
+            read_timeout 15m
+            write_timeout 15m
+          }
+        }
+      }
+      EOF
+
+      caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+  # --------------------------------------------------------------- services ----
+  - path: /etc/systemd/system/llama-server.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=llama.cpp server - GLM-5.3-Flash-Uncensored IQ1_S (text only)
+      After=network-online.target
+      Wants=network-online.target
+      # Never give up: after a reboot, a driver reload or an OOM kill the GPU must
+      # end up serving again without a human.  StartLimitIntervalSec=0 disables the
+      # default "5 starts in 10 s then stay failed" ratchet.
+      StartLimitIntervalSec=0
+
+      [Service]
+      Type=simple
+      EnvironmentFile=/etc/av2-glm53/env
+      ExecStart=/bin/bash -lc 'exec /usr/local/bin/llama-server \
+        -m "$MODEL_DIR/$MODEL_FILE" \
+        --alias "$MODEL_ALIAS" \
+        -c "$((CTX_PER_SLOT * PARALLEL))" --jinja --reasoning-budget 1024 \
+        -ngl "$GPU_LAYERS" --parallel "$PARALLEL" --metrics --timeout 900 \
+        --host 127.0.0.1 --port "$PORT" \
+        --api-key "$API_KEY"'
+      Restart=always
+      RestartSec=10
+      # Cold boot reads ~72 GiB of weights off a managed disk; give it room.
+      TimeoutStartSec=2400
+      # Generous stop: a half-finished completion has already been paid for.
+      TimeoutStopSec=180
+      LimitNOFILE=65536
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/av2-glm53-bootstrap.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=AV2 one-shot bootstrap (driver + weights + llama.cpp + Caddy)
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=!/etc/av2-glm53/bootstrapped
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      TimeoutStartSec=infinity
+      ExecStart=/usr/local/sbin/av2-glm53-driver
+      ExecStart=/usr/local/sbin/av2-glm53-fetch
+      ExecStart=/usr/local/sbin/av2-glm53-build
+      ExecStart=/usr/local/sbin/av2-glm53-caddy
+      ExecStart=/bin/bash -c 'touch /etc/av2-glm53/bootstrapped'
+      ExecStart=/bin/systemctl enable --now llama-server.service
+      ExecStart=/bin/systemctl enable --now caddy.service
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - [systemctl, daemon-reload]
+  - [systemctl, start, --no-block, av2-glm53-bootstrap.service]
+
+final_message: "AV2 GLM-5.3 bootstrap started; follow with: journalctl -u av2-glm53-bootstrap -f"

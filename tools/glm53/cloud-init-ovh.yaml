@@ -1,0 +1,134 @@
+#cloud-config
+# OVHcloud Public Cloud GPU bootstrap for Anonymous V2 + GLM-5.3-Flash-Uncensored IQ1_S.
+#
+# provision_ovh.ps1 substitutes __OPERATOR_CIDR__, __CTX__ and __PARALLEL__ and then
+# base64-encodes this file into the instance `userData`. Do not run it unsubstituted.
+#
+# It deliberately does NOT start the model: the 71.5 GiB download is a separate,
+# explicit step (`fetch.sh`) so a failed download never leaves a half-configured
+# service restarting in a loop. Port 8080 is firewalled to the operator CIDR only.
+package_update: true
+package_upgrade: false
+packages:
+  - ca-certificates
+  - curl
+  - jq
+  - ufw
+  - pciutils
+
+write_files:
+  - path: /opt/glm53/fetch.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      REPO="BoldingBuilds/GLM-5.3-Flash-Uncensored-GGUF"
+      DEST="/models"
+      mkdir -p "$DEST"
+      cd "$DEST"
+      # 44,984,374,336 + 31,810,244,064 = 76,794,618,400 bytes = 71.52 GiB
+      for f in GLM-5.3-Flash-Uncensored-IQ1S-00001-of-00002.gguf \
+               GLM-5.3-Flash-Uncensored-IQ1S-00002-of-00002.gguf \
+               SHA256SUMS.txt; do
+        url="https://huggingface.co/${REPO}/resolve/main/${f}?download=true"
+        echo "==> ${f}"
+        curl -fL --retry 5 --retry-delay 5 -C - -o "$f" "$url"
+      done
+      echo "==> sha256"
+      grep -E 'IQ1S-0000[12]-of-00002' SHA256SUMS.txt > /tmp/wanted.sums || true
+      if [ -s /tmp/wanted.sums ]; then
+        sha256sum -c /tmp/wanted.sums
+      else
+        echo "SHA256SUMS.txt has no matching lines - verify manually before serving"
+      fi
+      df -h "$DEST"
+
+  - path: /opt/glm53/serve.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Starts llama.cpp's CUDA server on port 8080.
+      #   ./serve.sh              full GPU offload when the cards hold 71.5 GiB
+      #   LAYERS=90 ./serve.sh    layer count used by the --n-cpu-moe fallback
+      set -euo pipefail
+      MODELS=/models
+      MODEL="${MODELS}/GLM-5.3-Flash-Uncensored-IQ1S-00001-of-00002.gguf"
+      CTX=__CTX__
+      PAR=__PARALLEL__
+      LAYERS="${LAYERS:-90}"
+      WEIGHTS_GB=71.5
+
+      command -v nvidia-smi >/dev/null || { echo "no nvidia-smi: install the driver and reboot first"; exit 1; }
+      VRAM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | awk '{s+=$1} END {print int(s/1024)}')
+      echo "total VRAM: ${VRAM} GiB across $(nvidia-smi -L | wc -l) card(s)"
+
+      EXTRA=()
+      if [ "$VRAM" -ge 78 ]; then
+        echo "full GPU offload"
+        EXTRA+=(-ngl 999)
+      else
+        MISSING=$(awk -v w="$WEIGHTS_GB" -v v="$VRAM" 'BEGIN { printf "%d", (w - v) }')
+        MOE=$(awk -v m="$MISSING" -v w="$WEIGHTS_GB" -v l="$LAYERS" 'BEGIN { printf "%d", int(m / w * l) + 1 }')
+        echo "VRAM ${VRAM} GiB < 71.5 GiB: keeping ${MOE} of ${LAYERS} layers of experts on CPU (--n-cpu-moe)"
+        EXTRA+=(-ngl 999 --n-cpu-moe "$MOE")
+      fi
+
+      docker rm -f glm53 2>/dev/null || true
+      docker run -d --name glm53 --gpus all --restart unless-stopped \
+        -p 8080:8080 -v "$MODELS":/models:ro \
+        ghcr.io/ggml-org/llama.cpp:server-cuda \
+        -m "$MODEL" \
+        --host 0.0.0.0 --port 8080 \
+        -c "$CTX" -np "$PAR" --jinja \
+        "${EXTRA[@]}"
+      echo "waiting for the server socket (weights mmap takes a while)..."
+      for i in $(seq 1 120); do
+        if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then echo "server healthy"; break; fi
+        sleep 5
+      done
+      curl -fsS http://127.0.0.1:8080/v1/models | jq -r '.data[].id' || echo "not healthy yet: docker logs -f glm53"
+
+runcmd:
+  # 1. docker engine
+  - |
+    if ! command -v docker >/dev/null 2>&1; then
+      curl -fsSL https://get.docker.com | sh
+    fi
+    systemctl enable --now docker
+
+  # 2. NVIDIA driver - skipped when the image already ships one (OVH GPU images do)
+  - |
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+      apt-get update || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y linux-headers-generic || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-driver-550-server-open || \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-driver-550-server || true
+    fi
+    modprobe nvidia || true
+
+  # 3. GPU-aware container runtime
+  - |
+    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+      | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+      | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+      > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    apt-get update || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-container-toolkit || true
+    nvidia-ctk runtime configure --runtime=docker || true
+    systemctl restart docker || true
+
+  # 4. firewall: SSH from anywhere, the model API only from the operator CIDR
+  - |
+    ufw --force reset
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 22/tcp
+    ufw allow from __OPERATOR_CIDR__ to any port 8080 proto tcp
+    ufw --force enable
+
+  # 5. pre-pull the runtime image so serve.sh does not stall on a cold pull
+  - |
+    docker pull ghcr.io/ggml-org/llama.cpp:server-cuda || true
+
+final_message: "glm53 bootstrap complete. If nvidia-smi is missing, reboot once. Then: /opt/glm53/fetch.sh && /opt/glm53/serve.sh"

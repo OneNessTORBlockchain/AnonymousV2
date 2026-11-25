@@ -1,0 +1,377 @@
+#cloud-config
+# Anonymous V2 - self-hosted GLM-5.3-Flash-Uncensored (IQ1_S) on a GPU Linode.
+#
+# This file is the cloud-init payload consumed by tools/glm53/provision_akamai.ps1.
+# The double-underscore tokens below are substituted at create time; the resulting
+# text is what Akamai hands to the instance.  Everything here is opt-in and
+# reversible: the weights live on the instance disk, so destroying the box ends
+# the spend immediately.
+#
+# Design rules baked into this file:
+#   * text-only     -> mmproj-*.gguf is never fetched and --mmproj is never passed
+#   * no filters    -> no system prompt, no refusal rules, no output rewriting
+#   * not public    -> llama-server binds 127.0.0.1; Caddy terminates TLS; ufw
+#                      default-deny with 443 open only to the operator CIDR
+#   * cheap to undo -> one bootstrap oneshot, one service, one Caddyfile
+#
+# GPU-count independence: the same payload serves 1-4 cards.  On a 2x card box
+# (48 GB) the 71.5 GiB of IQ1_S weights do not fit in VRAM, so
+# /usr/local/sbin/av2-glm53-serve derives --n-cpu-moe from the GGUF's own
+# block_count and the plan's VRAM instead of hardcoding a layer number that
+# would be wrong for one of the shapes.
+#
+# Ollama is opt-in (__OLLAMA_MODEL__ empty = skipped): it is only there for the
+# DeepSeek GGUF, which needs 112.5 GiB and therefore cannot run on a 2x card box.
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - build-essential
+  - cmake
+  - git
+  - curl
+  - ca-certificates
+  - gnupg
+  - ufw
+  - jq
+  - openssl
+
+write_files:
+  # ---------------------------------------------------------------- settings --
+  - path: /etc/av2-glm53/env
+    permissions: '0600'
+    owner: root:root
+    content: |
+      MODEL_REPO=BoldingBuilds/GLM-5.3-Flash-Uncensored-GGUF
+      MODEL_FILE=GLM-5.3-Flash-Uncensored-IQ1S-00001-of-00002.gguf
+      MODEL_DIR=__MODEL_DIR__
+      MODEL_ALIAS=glm-5.3-flash-uncensored-iq1s
+      CTX=__CTX__
+      PORT=8080
+      PARALLEL=__PARALLEL__
+      LLAMA_TAG=b11279
+      API_KEY=__API_KEY__
+      OPERATOR_CIDR=__OPERATOR_CIDR__
+      CADDY_SITE=__CADDY_SITE__
+      CADDY_INTERNAL_TLS=__CADDY_INTERNAL_TLS__
+      # The plan's real VRAM/RAM, written at create time from the Linode type
+      # object, so the serve wrapper can size the GPU/CPU split without guessing.
+      PLAN_VRAM_GB=__PLAN_VRAM_GB__
+      PLAN_RAM_GB=__PLAN_RAM_GB__
+      WEIGHTS_GB=__WEIGHTS_GB__
+      # auto = derive --n-cpu-moe from the GGUF block_count; an integer pins it.
+      GPU_LAYERS=auto
+      # Ollama second model (empty = not installed).  Needs 112.5 GiB, so the
+      # provisioner refuses to set it on a plan that cannot hold it.
+      OLLAMA_MODEL=__OLLAMA_MODEL__
+      OLLAMA_HOST=127.0.0.1:11434
+
+  # ------------------------------------------------------------ weight pull ---
+  # Only the two IQ1_S shards are fetched.  The 1.13 GB mmproj vision projector is
+  # deliberately skipped: without it the text-only path is the only path.
+  - path: /usr/local/sbin/av2-glm53-fetch
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Download the IQ1_S shards onto the block volume and verify the author's
+      # SHA256SUMS entry for each file before the server is allowed to start.
+      set -euo pipefail
+      . /etc/av2-glm53/env
+      install -d -m 0755 "$MODEL_DIR"
+      cd "$MODEL_DIR"
+      base="https://huggingface.co/${MODEL_REPO}/resolve/main"
+
+      for shard in GLM-5.3-Flash-Uncensored-IQ1S-00001-of-00002.gguf \
+                   GLM-5.3-Flash-Uncensored-IQ1S-00002-of-00002.gguf; do
+        if [ -s "$shard" ]; then
+          echo "have $shard"
+          continue
+        fi
+        echo "fetching $shard"
+        curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
+             -C - -o "$shard.part" "$base/$shard"
+        mv "$shard.part" "$shard"
+      done
+
+      curl -fsSL -o SHA256SUMS.txt "$base/SHA256SUMS.txt"
+      grep -E 'IQ1S-0000[12]-of-00002\.gguf' SHA256SUMS.txt > SHA256SUMS.iq1s.txt
+      if [ -s SHA256SUMS.iq1s.txt ]; then
+        sha256sum -c SHA256SUMS.iq1s.txt
+      else
+        echo "WARNING: no shard entry in SHA256SUMS.txt; hashes unchecked" >&2
+      fi
+
+  # ------------------------------------------------------------------ build ----
+  - path: /usr/local/sbin/av2-glm53-build
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Build llama-server with CUDA.  b11279 is the first mainline revision that
+      # names this architecture glm5-next (PR #27773); older builds reject the file.
+      set -euo pipefail
+      . /etc/av2-glm53/env
+      export DEBIAN_FRONTEND=noninteractive
+
+      if ! command -v nvcc >/dev/null 2>&1; then
+        echo "nvcc missing - installing the distro CUDA toolkit (slow, one time)"
+        apt-get update -qq
+        apt-get install -y -qq nvidia-cuda-toolkit || \
+          echo "WARNING: toolkit install failed; the cmake step will report why" >&2
+      fi
+
+      src=/opt/llama.cpp
+      if [ ! -d "$src/.git" ]; then
+        git clone https://github.com/ggml-org/llama.cpp "$src"
+      fi
+      cd "$src"
+      git fetch --tags --depth 1 origin || true
+      if git rev-parse --verify --quiet "refs/tags/${LLAMA_TAG}" >/dev/null; then
+        git -c advice.detachedHead=false checkout "${LLAMA_TAG}"
+      else
+        echo "tag ${LLAMA_TAG} unavailable; staying on $(git rev-parse --short HEAD)" >&2
+      fi
+      git rev-parse HEAD > /etc/av2-glm53/llama-build.txt
+
+      cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DLLAMA_CURL=ON
+      cmake --build build --config Release -j"$(nproc)" -t llama-server llama-gguf
+      install -m 0755 build/bin/llama-server /usr/local/bin/llama-server
+      # llama-gguf only reads the GGUF header; the serve wrapper uses it to size
+      # the GPU/CPU expert split from the model's own block_count.
+      install -m 0755 build/bin/llama-gguf /usr/local/bin/llama-gguf
+      /usr/local/bin/llama-server --version | head -5 > /etc/av2-glm53/llama-version.txt
+
+  # ------------------------------------------------------------ TLS frontend ---
+  - path: /usr/local/sbin/av2-glm53-caddy
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Caddy is the only listener on 443; llama-server stays on loopback.
+      set -euo pipefail
+      . /etc/av2-glm53/env
+      export DEBIAN_FRONTEND=noninteractive
+
+      if ! command -v caddy >/dev/null 2>&1; then
+        apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+          | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+          > /etc/apt/sources.list.d/caddy-stable.list
+        apt-get update -qq
+        apt-get install -y -qq caddy
+      fi
+
+      if [ "$CADDY_INTERNAL_TLS" = "1" ]; then
+        tls_line="tls internal"
+        global_opts="auto_https disable_redirects"
+      else
+        tls_line="# real domain: Caddy issues a public certificate via ACME"
+        global_opts=""
+      fi
+
+      # With no domain the public IP is not known until boot, so the site address is
+      # resolved here and Caddy issues an internal-CA certificate for that IP SAN.
+      site="$CADDY_SITE"
+      if [ "$site" = "auto" ]; then
+        ip="$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)"
+        site="https://${ip}"
+        echo "no domain supplied; serving ${site} with the internal CA"
+      fi
+
+      cat > /etc/caddy/Caddyfile <<EOF
+      {
+        ${global_opts}
+      }
+
+      ${site} {
+        ${tls_line}
+        encode zstd gzip
+        reverse_proxy 127.0.0.1:${PORT} {
+          flush_interval -1
+        }
+      }
+      EOF
+
+      caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+  # --------------------------------------------------------------- services ----
+  # The command line is assembled here rather than in the unit so the same
+  # cloud-init works on a 1x card box and a 4x card box.  When VRAM is smaller
+  # than the weights it keeps the MoE expert tensors of the first N layers in
+  # system RAM (--n-cpu-moe); N is derived from the GGUF block_count, not guessed.
+  - path: /usr/local/sbin/av2-glm53-serve
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      . /etc/av2-glm53/env
+
+      model="$MODEL_DIR/$MODEL_FILE"
+      if [ ! -s "$model" ]; then
+        echo "weights missing: $model" >&2
+        exit 1
+      fi
+
+      block_count=""
+      if [ -x /usr/local/bin/llama-gguf ]; then
+        block_count="$(/usr/local/bin/llama-gguf "$model" 2>/dev/null \
+          | awk -F'= *' '/block_count/ {print $2; exit}' | tr -dc '0-9')"
+      fi
+      if [ -z "$block_count" ]; then
+        block_count="$(strings -a "$model" 2>/dev/null \
+          | grep -m1 'glm5-next.block_count' | tr -dc '0-9' || true)"
+      fi
+      echo "block_count=${block_count:-unknown} vram=${PLAN_VRAM_GB}GB ram=${PLAN_RAM_GB}GB weights=${WEIGHTS_GB}GB gpu_layers=$GPU_LAYERS"
+
+      moe_layers=0
+      if [ "$GPU_LAYERS" = "auto" ] && [ -n "$block_count" ]; then
+        # Reserve 12 GB of VRAM for a 16 k KV cache, CUDA context and
+        # fragmentation; whatever fraction of the weights is left over goes to
+        # CPU experts.  Keep this in step with $ReserveGb in provision_akamai.ps1.
+        moe_layers="$(awk -v v="$PLAN_VRAM_GB" -v w="$WEIGHTS_GB" -v n="$block_count" 'BEGIN {
+          usable = v - 12; if (usable < 0) usable = 0;
+          off = 1 - usable / w; if (off < 0) off = 0; if (off > 1) off = 1;
+          printf "%d", int(off * n + 0.999) }')"
+      fi
+
+      args=(
+        -m "$model"
+        --alias "$MODEL_ALIAS"
+        -c "$CTX" --jinja --reasoning-budget 1024
+        --parallel "$PARALLEL" --metrics
+        --host 127.0.0.1 --port "$PORT"
+        --api-key "$API_KEY"
+      )
+
+      if [ "${moe_layers:-0}" -gt 0 ]; then
+        echo "VRAM cannot hold the weights: MoE experts of $moe_layers/$block_count layers stay in RAM"
+        args+=(--n-cpu-moe "$moe_layers" -ngl 999)
+      elif [ "$GPU_LAYERS" = "auto" ]; then
+        if [ -n "$block_count" ]; then
+          args+=(-ngl 999)
+        else
+          echo "WARNING: block_count unreadable; set GPU_LAYERS=<n> in /etc/av2-glm53/env if this OOMs" >&2
+          args+=(-ngl 999)
+        fi
+      else
+        args+=(-ngl "$GPU_LAYERS")
+      fi
+
+      echo "exec llama-server ${args[*]}"
+      exec /usr/local/bin/llama-server "${args[@]}"
+
+  # ------------------------------------------------------- ollama (optional) ---
+  # Only used for the DeepSeek GGUF.  Empty OLLAMA_MODEL = not installed at all,
+  # which is what the provisioner does on any plan that cannot hold 112.5 GiB.
+  - path: /usr/local/sbin/av2-glm53-ollama
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      . /etc/av2-glm53/env
+      if [ -z "${OLLAMA_MODEL:-}" ]; then
+        echo "OLLAMA_MODEL is empty - skipping the Ollama runtime entirely"
+        exit 0
+      fi
+
+      if ! command -v ollama >/dev/null 2>&1; then
+        curl -fsSL https://ollama.com/install.sh | sh
+      fi
+
+      install -d -m 0755 /etc/systemd/system/ollama.service.d
+      cat > /etc/systemd/system/ollama.service.d/override.conf <<EOF
+      [Service]
+      Environment="OLLAMA_HOST=127.0.0.1:11434"
+      Environment="OLLAMA_KEEP_ALIVE=30m"
+      Environment="OLLAMA_MAX_LOADED_MODELS=1"
+      Environment="OLLAMA_FLASH_ATTENTION=1"
+      EOF
+      systemctl daemon-reload
+      systemctl enable --now ollama
+
+      # The pull is ~112 GiB and Ollama stages a second copy on disk, so it runs
+      # in the background: llama-server must answer before the second model lands.
+      nohup ollama pull "$OLLAMA_MODEL" >/var/log/av2-glm53-ollama-pull.log 2>&1 &
+      echo "ollama pull started in the background; tail /var/log/av2-glm53-ollama-pull.log"
+
+  # ------------------------------------------------------------------ ready ----
+  # The bootstrap only succeeds once the authenticated OpenAI surface answers,
+  # so "unit active" means "model serving", not "script ran".
+  - path: /usr/local/sbin/av2-glm53-ready
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      . /etc/av2-glm53/env
+      for _ in $(seq 1 180); do
+        if curl -fsS -m 5 -H "Authorization: Bearer $API_KEY" \
+             "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
+          date -u +%FT%TZ > /etc/av2-glm53/ready
+          echo "ready at $(cat /etc/av2-glm53/ready)"
+          exit 0
+        fi
+        sleep 10
+      done
+      echo "llama-server did not answer /v1/models within 30 min" >&2
+      journalctl -u llama-server -n 40 --no-pager >&2 || true
+      exit 1
+
+  - path: /etc/systemd/system/llama-server.service
+
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=llama.cpp server - GLM-5.3-Flash-Uncensored IQ1_S (text only)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      EnvironmentFile=/etc/av2-glm53/env
+      ExecStart=/usr/local/sbin/av2-glm53-serve
+      Restart=on-failure
+      RestartSec=15
+      TimeoutStartSec=1800
+      LimitNOFILE=65536
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/av2-glm53-bootstrap.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=AV2 one-shot bootstrap (weights + llama.cpp + Caddy + ufw)
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=!/etc/av2-glm53/bootstrapped
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      TimeoutStartSec=infinity
+      ExecStart=/usr/local/sbin/av2-glm53-fetch
+      ExecStart=/usr/local/sbin/av2-glm53-build
+      ExecStart=/usr/local/sbin/av2-glm53-caddy
+      ExecStart=/bin/systemctl enable --now llama-server.service
+      ExecStart=/bin/systemctl enable --now caddy.service
+      ExecStart=/usr/local/sbin/av2-glm53-ollama
+      ExecStart=/bin/bash -c 'touch /etc/av2-glm53/bootstrapped'
+      # Last, so a slow first load cannot cause the whole bootstrap to re-run.
+      ExecStart=/usr/local/sbin/av2-glm53-ready
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - [bash, -lc, "ufw --force reset"]
+  - [bash, -lc, "ufw default deny incoming"]
+  - [bash, -lc, "ufw default allow outgoing"]
+  - [bash, -lc, ". /etc/av2-glm53/env; ufw allow from \"$OPERATOR_CIDR\" to any port 22 proto tcp"]
+  - [bash, -lc, ". /etc/av2-glm53/env; ufw allow from \"$OPERATOR_CIDR\" to any port 443 proto tcp"]
+  - [bash, -lc, "ufw --force enable"]
+  - [systemctl, daemon-reload]
+  - [systemctl, start, --no-block, av2-glm53-bootstrap.service]
+
+final_message: "AV2 GLM-5.3 bootstrap started; follow with: journalctl -u av2-glm53-bootstrap -f"
+

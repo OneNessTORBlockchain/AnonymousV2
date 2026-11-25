@@ -1,0 +1,87 @@
+# Anonymous V2 worker sandbox.
+#
+# The backend never runs target-facing commands on the host: every tool call
+# becomes `docker exec av2-kali bash -lc "<command>"` (see app/core/sandbox.py).
+# The container therefore has no host bind mounts and no Docker socket; the only
+# shared artefact volume is `av2-work`, mounted at /work (AV2_KALI_WORKDIR).
+#
+#   docker compose -f docker/docker-compose.yml up -d
+#
+# The backend also starts an existing-but-stopped container on boot, so `up -d`
+# once is enough afterwards.
+#
+# Network / egress identity
+# -------------------------
+# 1. `av2-net` is a private bridge pinned to 10.213.77.0/24 - deliberately
+#    outside the usual home ranges (192.168.x.x, 10.0.x.x), the WSL bridge
+#    (172.25.x.x) and Docker's defaults (172.17/172.18.x.x), so the sandbox
+#    address can never be confused with the operator's device on the LAN.
+#    Nothing is published on the host: the worker has no inbound path.
+# 2. Public egress goes through the `tor` sidecar.  `app/core/sandbox.py`
+#    prefixes every exec'd command with ALL_PROXY/HTTP(S)_PROXY =
+#    socks5h://tor:9050, and `docker/proxychains4.conf` is mounted for tools
+#    that ignore proxy variables (`proxychains4 nmap -sT -Pn ...`).  A target
+#    therefore sees a Tor exit node, not the operator's ISP address, city or
+#    timezone.  `AV2_SANDBOX_EGRESS=direct` opts out when Tor is wrong for a
+#    given engagement.
+
+services:
+  kali:
+    image: ${AV2_KALI_IMAGE:-oneness-kali-agent:local}
+    container_name: av2-kali
+    hostname: av2-kali
+    working_dir: /work
+    # Keep the Kali worker alive: the image default CMD spawns kali-intro and then
+    # sleeps, which is exactly what an exec-only container needs.
+    command:
+      - /bin/bash
+      - -lc
+      - "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done"
+    init: true
+    restart: unless-stopped
+    # Raw-socket scanning (nmap -sS, masscan), low ports and ptrace need these caps;
+    # the image is a purpose-built Kali worker and expects the same profile as the
+    # other oneness-kali-agent containers on this host.
+    cap_add:
+      - NET_ADMIN
+      - NET_BIND_SERVICE
+      - NET_RAW
+      - SYS_PTRACE
+    security_opt:
+      - no-new-privileges:false
+      - seccomp=unconfined
+    volumes:
+      - av2-work:/work
+      # proxychains-ng points at the SOCKS5 sidecar so scans that cannot honour
+      # *_PROXY still leave through Tor.
+      - ./proxychains4.conf:/etc/proxychains4.conf:ro
+    depends_on:
+      - tor
+    networks:
+      av2-net:
+        ipv4_address: 10.213.77.3
+
+  # SOCKS5 (9050) + HTTP (8118) proxy, reachable only from av2-net.  No host port
+  # is published, so the operator's LAN cannot use it as an open proxy.
+  tor:
+    image: ${AV2_TOR_IMAGE:-dperson/torproxy:latest}
+    container_name: av2-tor
+    hostname: tor
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      av2-net:
+        ipv4_address: 10.213.77.2
+        aliases:
+          - tor
+
+networks:
+  av2-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.213.77.0/24
+
+volumes:
+  av2-work:
