@@ -465,3 +465,46 @@ then retry; the key itself is valid [<server body>]`).  Top up, run
    tool is the next tightening step.
 4. `/api/health` still names the model check `ollama=`; renaming it to `model=`
    needs a schema/frontend touch and is deferred.
+
+## Squads of five, provider panel, unlimited rounds (2026-11-25)
+
+The roster became squads of five, the round ceiling moved to 50 with an until-done
+mode, and the provider is editable from the UI.
+
+* **Roster** — `FLEET_GROUP_ROLES = recon, web, exploit, coder, reporter` with
+  `FLEET_GROUP_SIZE = 5` and `FLEET_MAX_GROUPS = 5` in `backend/app/config.py`.
+  `AV2_FLEET_GROUPS` (default 1) is the composer's *squads* selector: 1-5 launches
+  5 / 10 / 15 / 20 / 25 agents, models handed out round-robin over
+  `AV2_FLEET_MODELS`.  `_fleet_roster` gives every squad the five roles with group
+  ids `[1]*5, [2]*5, …` and unique `agent-N` lane ids; `GET /api/fleet` previews
+  exactly that roster.
+* **Classic path clamped** — `/api/swarm` no longer multiplies lanes by category
+  past one squad: `lanes` is 1-5 in the schema (422 above) and `swarm.start` clamps
+  it to `FLEET_GROUP_SIZE`, so five categories top out at 25 agents (`MAX_LANES`)
+  instead of 125.
+* **Rounds** — `rounds` is 1-50 in both request schemas; `until_complete` uses
+  `AV2_FLEET_MAX_ROUNDS` (50) as its cap and `unlimited` uses
+  `AV2_FLEET_UNLIMITED_ROUNDS` (10000), with the completion gate, the token window
+  and the wall clock as the only other exits.  `/until on` sets the field to 50.
+* **Provider panel** — `GET/POST /api/provider` reads and rewrites the `AV2_*` keys
+  in `.env`; the sidebar form (label, base URL, model, key, hint, refresh) shows the
+  live provider, whether a key is stored and whether the endpoint answered.
+  `.env` is git-ignored and `.env.example` documents the accepted labels
+  (`openai`/`venice`/`openai-compatible` → `/chat/completions`, `ollama*` → native
+  `/api/chat`; Ollama Cloud must use `openai` and keeps the `:cloud` suffix).
+* **Branding and packaging** — `browser.png` is the sidebar logo and the favicon;
+  `install.ps1` + `install.cmd` install the backend packages; `README.md` and the
+  OneNess non-commercial source-available licence are in the repository root.
+
+Verified at the last restart (`.\\start.ps1 -NoBrowser`):
+
+```
+GET  /api/health                    -> status=ok version=2.1.0 provider=openai
+GET  /api/fleet                     -> groups=1 size=5 max_rounds=50
+POST /api/swarm groups=0|6          -> 422 (ceiling is 5 squads)
+POST /api/swarm lanes=6, rounds=51  -> 422 (ceiling is one squad / 50 rounds)
+_fleet_roster groups 1..5           -> 5/10/15/20/25 lanes, unique ids, [i]*5 groups
+_rounds_for until / unlimited       -> 50 / 10000
+python -m pytest -q                 -> 15 passed
+```
+

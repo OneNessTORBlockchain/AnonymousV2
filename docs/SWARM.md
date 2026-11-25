@@ -1,28 +1,30 @@
-# Swarm — six agents per category, one ledger, one board
+# Swarm — squads of five, one ledger, one board
 
 `backend/app/core/swarm.py` turns one objective into a **synchronised fleet**:
 
-> **The default path is the model fleet.**  `POST /api/chat` runs six agents at
-> once — three on `glm-5-3-flash-uncensored` (recon, web, exploit) and three on
-> `deepseek-v4-1-flash-1017-uncensored` (coder, reporter, analyst) — each with
-> its own **persistent shell** inside `av2-kali`, its own workdir and browser
-> profile, one dedup ledger and one board.  The category-per-lane mode below is
-> what `POST /api/swarm` starts when you want a wider sweep.
+> **The default path is a squad of five.**  `POST /api/chat` fans a task out to
+> `recon, web, exploit, coder, reporter` — one agent per role, models handed out
+> round-robin over `AV2_FLEET_MODELS` — each with its own **persistent shell**
+> inside `av2-kali`, its own workdir and browser profile, one dedup ledger and
+> one board.  `groups: 2..5` repeats that squad 2-5 times (10/15/20/25 agents).
+> The category-per-lane mode below is what `POST /api/swarm` starts when you want
+> a wide sweep without squads.
 
 | knob | default | meaning |
 |---|---|---|
-| fleet (default chat path) | 2 models × 3 agents = 6 | GLM-5.3 for recon/web/exploit, DeepSeek-V4.1 for coder/reporter/analyst |
-| categories | `recon, web, exploit, coder, reporter` | lanes are formed per category |
-| lanes per category | **6** | 30 concurrent agents for five categories |
-| rounds | 3 (API default 2, max 20) | strategist re-plans after each barrier; `until_complete: true` keeps going until the objective is answered |
+| fleet (default chat path) | 1 squad = 5 | recon, web, exploit, coder, reporter, spread over the fleet models |
+| groups | 1 (1-5) | squads per run: 5 / 10 / 15 / 20 / 25 agents |
+| categories | `recon, web, exploit, coder, reporter` | classic mode forms lanes per category |
+| lanes per category | **5** | clamped to one squad, so 5 categories × 5 = the 25-agent ceiling |
+| rounds | 2 (max 50) | strategist re-plans after each barrier; `until_complete: true` runs to `AV2_FLEET_MAX_ROUNDS` (50) and `unlimited: true` to `AV2_FLEET_UNLIMITED_ROUNDS` (10000) |
 | steps per lane | 3 | model turns per lane per round |
 | calls per step | 2 | tool calls executed from one model turn |
-| concurrency | 30 | asyncio semaphore, so 6×5 lanes really do run together |
-| token budget | 400 000 | hard stop shared by the whole run |
+| concurrency | 30 | asyncio semaphore, so all 25 lanes really do run together |
+| token budget | 400 000 (until-complete 2 000 000) | shared by the whole run, scaled by lanes × rounds |
 | per-lane wall clock | 900 s | a hung lane is cut, the rest continue |
 
-Override with `AV2_SWARM_*` (see `backend/app/config.py`), e.g.
-`AV2_SWARM_AGENTS_PER_CATEGORY=6`, `AV2_SWARM_CATEGORIES=recon,web,exploit`.
+Override with `AV2_SWARM_*` / `AV2_FLEET_*` (see `backend/app/config.py`), e.g.
+`AV2_FLEET_GROUPS=3` for three squads, `AV2_SWARM_CATEGORIES=recon,web,exploit`.
 
 The dashboard always renders all five role chips (recon, web, exploit, coder,
 reporter) and starts with every one enabled.  `AV2_SWARM_CATEGORIES` only sets
@@ -132,7 +134,7 @@ Round-loop semantics:
 
 ```powershell
 $body = @{ objective = 'Map 10.0.0.252:8081-8083 and prove the riskiest finding';
-           categories = @('recon','web','exploit'); lanes = 6; rounds = 2 } | ConvertTo-Json
+           categories = @('recon','web','exploit'); lanes = 5; rounds = 2 } | ConvertTo-Json
 $run = Invoke-RestMethod http://127.0.0.1:8420/api/swarm -Method Post -ContentType application/json -Body $body
 Invoke-RestMethod "http://127.0.0.1:8420/api/swarm/$($run.run_id)" | ConvertTo-Json -Depth 5
 ```
@@ -284,14 +286,15 @@ Skills are available to every model in the fleet, and creating one also writes a
 
 ## Chat commands (always available, even mid-run)
 
-`/help` `/agents 1..6` `/rounds 1..20` `/until on|off` `/stop` `/steer <text>`
+`/help` `/squads 1..5` `/rounds 1..50` `/until on|off` `/stop` `/steer <text>`
 `/files [path]` `/download <path>` `/delete <path>` `/wipe` `/memory [query]`
 `/memory forget <id>` `/skill` `/skill run <name> [args]` `/skill delete <name>`
 `/swarm` `/swarm stop`.
 
-`agents` (composer selector or `/agents N`) is the number of agents per cloud
-model, so 3 means six agents at once; it is passed to `/api/chat` and
-`/api/swarm` as `agents`.
+`squads` (composer selector, `/squads N` or `/agents N`) is the number of five-agent
+squads in the next task, so 3 means fifteen agents at once; it is passed to
+`/api/chat` and `/api/swarm` as `groups` (1-5).  `agents` still exists for the legacy
+``models x N`` roster and only applies when no `groups` value is sent.
 
 Typing a plain message while a fleet is live is not queued: it becomes an
 operator directive and the agents switch to it at their next step.
