@@ -498,7 +498,7 @@ function newSegment(agent, task, depth, data = {}) {
   const segment = el("div", level ? "segment deep" : "segment");
   segment.dataset.agent = key;
   const head = el("div", "seg-head");
-  const badge = el("span", /reporter|analyst/i.test(key) ? "badge reporter" : "badge", key);
+  const badge = el("span", /reporter/i.test(key) ? "badge reporter" : "badge", key);
   head.append(badge);
   if (data && data.model) {
     const chip = el("span", "model-chip", String(data.model).split("/").pop());
@@ -743,7 +743,7 @@ function onDone(event) {
           ? `${findings} finding(s) were recorded but the completion gate still says the objective ` +
             "is not proven, so this task is NOT complete."
           : "no finding was recorded, so this task is NOT complete.") +
-        " Everything the fleet learned is in the Memory panel; narrow the objective or run again " +
+        " Everything the fleet learned is in the Learning Board panel; narrow the objective or run again " +
         "with until-complete ticked.",
       true
     );
@@ -918,7 +918,7 @@ const CHAT_HELP = [
   "- `/download <path>` — download a file, or a zip of a folder, from the agents",
   "- `/delete <path>` — delete one file or folder inside the sandbox",
   "- `/wipe` — delete every file and folder in the workspace",
-  "- `/memory [query]` — review what the agents learned; `/memory forget <id>`",
+  "- `/memory [query]` — search the Learning Board; `/memory forget <id>` deletes a lesson",
   "- `/skill` — list skills; `/skill run <name> [args]`; `/skill delete <name>`",
   "- `/swarm` — latest run: lanes, findings, enforcement; `/swarm stop`",
   "",
@@ -1065,21 +1065,22 @@ async function handleCommand(raw) {
       return true;
     }
     try {
-      const payload = await api(
-        `/api/memory?limit=25${rest ? `&query=${encodeURIComponent(rest)}` : ""}`
-      );
+      const params = new URLSearchParams({ limit: "25" });
+      if (rest) params.set("query", rest);
+      const payload = await api(`/api/learning?${params.toString()}`);
       const notes = payload.notes || [];
       const stats = payload.stats || {};
       const body = notes.length
         ? notes
             .map(
               (note) =>
-                `- **#${note.id} ${note.kind}** — ${note.title}\n  ${String(note.body || "").slice(0, 220)}`
+                `- **#${note.id} ${note.status}/${note.category}** — ${note.title}\n  ` +
+                String(note.procedure || note.body || "").slice(0, 220)
             )
             .join("\n")
         : "*(nothing stored yet)*";
       systemTurn(
-        `### memory · ${stats.total || 0} note(s)\n\n${body}\n\nEdit or delete notes in the Memory panel, or \`/memory forget <id>\`.`
+        `### memory · ${stats.total || 0} note(s)\n\n${body}\n\nEdit, validate or delete lessons in the Learning Board panel, or \`/memory forget <id>\`.`
       );
       await loadMemory();
     } catch (error) {
@@ -1287,14 +1288,23 @@ async function sendMessage() {
   }
 }
 
-/* ---------------- durable memory ---------------- */
+/* ---------------- durable learning board ---------------- */
 const memoryForm = $("#memoryForm");
 const memoryKind = $("#memoryKind");
+const memoryCategory = $("#memoryCategory");
+const memoryRoles = $("#memoryRoles");
+const memoryTools = $("#memoryTools");
 const memoryTitle = $("#memoryTitle");
 const memoryBody = $("#memoryBody");
+const memoryReview = $("#memoryReview");
 const memoryList = $("#memoryList");
 const memoryStats = $("#memoryStats");
 const memoryRefresh = $("#memoryRefresh");
+const memoryQuery = $("#memoryQuery");
+const memoryFilterCategory = $("#memoryFilterCategory");
+const memoryFilterRole = $("#memoryFilterRole");
+const memoryFilterStatus = $("#memoryFilterStatus");
+const memoryFilterResult = $("#memoryFilterResult");
 let memoryEditing = 0;
 
 function memorySubmitLabel(text) {
@@ -1302,41 +1312,97 @@ function memorySubmitLabel(text) {
   if (button) button.textContent = text;
 }
 
+function memoryFilterQuery() {
+  const params = new URLSearchParams({ limit: "60" });
+  const query = memoryQuery ? memoryQuery.value.trim() : "";
+  if (query) params.set("query", query);
+  const filters = [
+    ["category", memoryFilterCategory],
+    ["role", memoryFilterRole],
+    ["status", memoryFilterStatus],
+    ["result", memoryFilterResult],
+  ];
+  for (const [key, select] of filters) {
+    if (select && select.value) params.set(key, select.value);
+  }
+  return params.toString();
+}
+
+function memoryBadge(text, className) {
+  return el("span", `mem-badge ${className || ""}`.trim(), text);
+}
+
 function renderMemory(payload) {
   const notes = (payload && payload.notes) || [];
   const stats = (payload && payload.stats) || {};
-  const kinds = stats.kinds || {};
-  const summary = Object.entries(kinds)
-    .map(([kind, value]) => `${kind} ${value}`)
-    .join(" · ");
   memoryStats.textContent = stats.total
-    ? `knowledge base: ${stats.total} note(s) · ${summary} · ${stats.uses || 0} reuses`
-    : "knowledge base: empty — every agent reports here after its task";
+    ? `learning board: ${stats.total} lesson(s) · ${stats.validated || 0} validated · ` +
+      `${stats.pending_reviews || 0} pending review · ${stats.failures || 0} failed approach(es) · ` +
+      `${stats.flagged || 0} flagged · ${stats.uses || 0} references`
+    : "learning board: empty — every agent reports here after its task";
   memoryList.textContent = "";
   if (!notes.length) {
-    memoryList.append(el("li", "none", "no notes yet"));
+    memoryList.append(el("li", "none", "no lessons match these filters"));
     return;
   }
   for (const note of notes.slice(0, 40)) {
     const row = el("li");
-    row.dataset.kind = note.kind;
+    row.dataset.kind = note.kind || "";
+    row.dataset.category = note.category || "";
+    row.dataset.status = note.status || "";
+    row.dataset.result = note.result || "";
     const head = el("div", "mem-head");
-    head.append(el("span", "kind", note.kind), el("span", "mem-title", note.title));
+    head.append(
+      memoryBadge(note.status || "proposed", `status-${note.status || "proposed"}`),
+      memoryBadge(note.category || "general-lessons", "category"),
+      el("span", "mem-title", note.title || "(untitled)")
+    );
+    if (note.result === "failure") head.append(memoryBadge("failed method", "result-failure"));
+    if (note.result === "success") head.append(memoryBadge("worked", "result-success"));
     const meta = el(
       "div",
       "mem-meta",
-      `#${note.id} · ${note.agent || "operator"} · conf ${Number(note.confidence || 0).toFixed(2)} · used ${note.uses || 0}`
+      `#${note.id} · ${note.agent || "operator"} · conf ${Number(note.confidence || 0).toFixed(2)} · ` +
+        `used ${note.uses || 0} · ${note.updated_at || note.created_at || ""}` +
+        (note.score ? ` · relevance ${Number(note.score).toFixed(2)}` : "")
     );
-    const body = el("p", "mem-body", String(note.body || "").slice(0, 280));
+    const body = el(
+      "p",
+      "mem-body",
+      String(note.procedure || note.body || "").slice(0, 280)
+    );
+    const facets = [];
+    if ((note.roles || []).length) facets.push(`roles: ${note.roles.join(", ")}`);
+    if ((note.tools || []).length) facets.push(`tools: ${note.tools.join(", ")}`);
+    if ((note.tags || []).length) facets.push(`tags: ${note.tags.join(", ")}`);
+    const metaLine = facets.length ? el("div", "mem-meta", facets.join(" · ")) : null;
     const actions = el("div", "mem-actions");
     const edit = el("button", "ghost mini", "edit");
     edit.type = "button";
     edit.addEventListener("click", () => startMemoryEdit(note));
+    actions.append(edit);
+    if (note.status !== "validated") {
+      const validate = el("button", "ghost mini", "validate");
+      validate.type = "button";
+      validate.addEventListener("click", () => reviewMemory(note.id, "validated"));
+      actions.append(validate);
+    }
+    if (note.status !== "deprecated") {
+      const deprecate = el("button", "ghost mini", "deprecate");
+      deprecate.type = "button";
+      deprecate.addEventListener("click", () => reviewMemory(note.id, "deprecated"));
+      actions.append(deprecate);
+    }
+    const related = el("button", "ghost mini", "related");
+    related.type = "button";
+    related.addEventListener("click", () => showMemoryRelated(note.id));
     const forget = el("button", "ghost mini danger", "delete");
     forget.type = "button";
     forget.addEventListener("click", () => deleteMemoryNote(note.id));
-    actions.append(edit, forget);
-    row.append(head, meta, body, actions);
+    actions.append(related, forget);
+    row.append(head, meta);
+    if (metaLine) row.append(metaLine);
+    row.append(body, actions);
     memoryList.append(row);
   }
 }
@@ -1344,59 +1410,106 @@ function renderMemory(payload) {
 function startMemoryEdit(note) {
   memoryEditing = Number(note.id) || 0;
   memoryKind.value = note.kind || "technique";
+  if (memoryCategory) memoryCategory.value = note.category || "";
+  if (memoryRoles) memoryRoles.value = (note.roles || [])[0] || "";
+  if (memoryTools) memoryTools.value = (note.tools || []).join(",");
   memoryTitle.value = note.title || "";
-  memoryBody.value = note.body || "";
+  memoryBody.value = note.procedure || note.body || "";
+  if (memoryReview) {
+    memoryReview.checked = note.status === "validated";
+    memoryReview.disabled = true;
+  }
   memorySubmitLabel("update");
   memoryTitle.focus();
 }
 
 async function loadMemory() {
   try {
-    renderMemory(await api("/api/memory?limit=60"));
+    renderMemory(await api(`/api/learning?${memoryFilterQuery()}`));
   } catch (_error) {
     memoryList.textContent = "";
-    memoryList.append(el("li", "none", "memory unavailable"));
+    memoryList.append(el("li", "none", "learning board unavailable"));
   }
 }
 
 async function saveMemory() {
   const title = memoryTitle.value.trim();
   if (!title) {
-    setTicker("a memory note needs a title");
+    setTicker("a lesson needs a title");
     return;
   }
   const body = {
     kind: memoryKind.value || "technique",
+    category: memoryCategory ? memoryCategory.value : "",
+    roles: memoryRoles && memoryRoles.value ? memoryRoles.value : [],
+    tools: memoryTools ? memoryTools.value.trim() : "",
     title,
     body: memoryBody.value.trim(),
     source: "operator",
     agent: "operator",
+    review: Boolean(memoryReview && memoryReview.checked),
   };
   try {
     if (memoryEditing) {
-      await api(`/api/memory/${memoryEditing}`, { method: "PUT", body: JSON.stringify(body) });
-      addNote(`memory note #${memoryEditing} updated`, false);
+      await api(`/api/learning/${memoryEditing}`, { method: "PUT", body: JSON.stringify(body) });
+      addNote(`lesson #${memoryEditing} updated`, false);
     } else {
-      await api("/api/memory", { method: "POST", body: JSON.stringify(body) });
-      addNote(`memory note saved: ${title}`, false);
+      const saved = await api("/api/learning", { method: "POST", body: JSON.stringify(body) });
+      const note = (saved && saved.note) || {};
+      addNote(
+        note.duplicate_of
+          ? `lesson merged into #${note.duplicate_of} (${note.status})`
+          : `lesson #${note.id || "?"} saved as ${note.status || "proposed"}`,
+        false
+      );
     }
     memoryEditing = 0;
     memoryTitle.value = "";
     memoryBody.value = "";
+    if (memoryReview) {
+      memoryReview.checked = false;
+      memoryReview.disabled = false;
+    }
     memorySubmitLabel("save");
     await loadMemory();
   } catch (error) {
-    addNote(`memory save failed: ${(error && error.message) || error}`, true);
+    addNote(`lesson save failed: ${(error && error.message) || error}`, true);
+  }
+}
+
+async function reviewMemory(noteId, status) {
+  try {
+    await api(`/api/learning/${noteId}/review`, {
+      method: "POST",
+      body: JSON.stringify({ status, reviewer: "operator" }),
+    });
+    addNote(`lesson #${noteId} marked ${status}`, false);
+    await loadMemory();
+  } catch (error) {
+    addNote(`review failed: ${(error && error.message) || error}`, true);
+  }
+}
+
+async function showMemoryRelated(noteId) {
+  try {
+    const payload = await api(`/api/learning/${noteId}/related?limit=5`);
+    const notes = (payload && payload.notes) || [];
+    const text = notes.length
+      ? notes.map((note) => `#${note.id} [${note.status}/${note.category}] ${note.title}`).join("\n")
+      : "no related lessons";
+    addNote(`related to lesson #${noteId}:\n${text}`, false);
+  } catch (error) {
+    addNote(`related lessons failed: ${(error && error.message) || error}`, true);
   }
 }
 
 async function deleteMemoryNote(noteId) {
-  if (!window.confirm(`Delete memory note #${noteId}?`)) return;
+  if (!window.confirm(`Delete lesson #${noteId}?`)) return;
   try {
-    await api(`/api/memory/${noteId}`, { method: "DELETE" });
+    await api(`/api/learning/${noteId}`, { method: "DELETE" });
     await loadMemory();
   } catch (error) {
-    addNote(`memory delete failed: ${(error && error.message) || error}`, true);
+    addNote(`lesson delete failed: ${(error && error.message) || error}`, true);
   }
 }
 
@@ -2459,6 +2572,20 @@ function wire() {
     });
   }
   if (memoryRefresh) memoryRefresh.addEventListener("click", () => loadMemory());
+  if (memoryQuery) {
+    memoryQuery.addEventListener("input", () => {
+      window.clearTimeout(memoryQuery._timer);
+      memoryQuery._timer = window.setTimeout(loadMemory, 250);
+    });
+  }
+  for (const select of [
+    memoryFilterCategory,
+    memoryFilterRole,
+    memoryFilterStatus,
+    memoryFilterResult,
+  ]) {
+    if (select) select.addEventListener("change", () => loadMemory());
+  }
   if (skillsRefresh) skillsRefresh.addEventListener("click", () => loadSkills());
 
   if (providerForm) {

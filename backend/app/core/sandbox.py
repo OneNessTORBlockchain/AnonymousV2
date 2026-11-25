@@ -450,7 +450,7 @@ class Sandbox:
     ) -> SandboxResult:
         if terminal and self.settings.agent_terminals:
             # One persistent shell per agent: cwd, exports and process state are
-            # private to that agent, and six agents can work in parallel
+            # private to that agent, and agents work in parallel
             # without sharing a working directory or racing on ``cd``.
             persistent = await self._terminal_exec(terminal, command, timeout=timeout, cwd=cwd)
             if persistent is not None:

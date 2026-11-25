@@ -24,8 +24,8 @@ class ChatRequest(BaseModel):
     #: "until done": ignore the round cap and keep re-planning until the
     #: completion gate approves (the token/wall-clock window still bounds it).
     unlimited: bool = False
-    #: Agents per model for this turn's fleet (1-6); legacy roster shape.
-    agents: int | None = Field(default=None, ge=1, le=6)
+    #: Agents per model for this turn's fleet (1-5); legacy roster shape.
+    agents: int | None = Field(default=None, ge=1, le=5)
     #: Squads of five (1-5) => 5 / 10 / 15 / 20 / 25 agents.  Takes precedence
     #: over ``agents`` and defaults to AV2_FLEET_GROUPS.
     groups: int | None = Field(default=None, ge=1, le=5)
@@ -116,8 +116,9 @@ class SwarmStartIn(BaseModel):
     #: True starts the default multi-model fleet (squads of five) instead of N
     #: lanes per category.
     fleet: bool = False
-    #: Agents per model for the legacy fleet shape (1-6); ``groups`` wins.
-    agents: int | None = Field(default=None, ge=1, le=6)
+    #: Agents per model for the legacy fleet shape (1-5, one squad's roles);
+    #: ``groups`` wins when both are sent.
+    agents: int | None = Field(default=None, ge=1, le=5)
     #: Squads of five (1-5) => 5 / 10 / 15 / 20 / 25 agents.
     groups: int | None = Field(default=None, ge=1, le=5)
 
@@ -166,7 +167,11 @@ class SteerIn(BaseModel):
 
 
 class MemoryNoteIn(BaseModel):
-    """One durable lesson written by the operator or an agent."""
+    """One durable lesson written by the operator or an agent.
+
+    The legacy shape (``kind``/``title``/``body``/``tags``) still works; the
+    structured Learning Board fields are optional and default sensibly.
+    """
 
     title: str = Field(min_length=1, max_length=200)
     body: str = Field(default="", max_length=8_000)
@@ -175,6 +180,18 @@ class MemoryNoteIn(BaseModel):
     confidence: float = Field(default=0.7, ge=0.0, le=1.0)
     agent: str = ""
     source: str = "operator"
+    category: str = Field(default="", max_length=40)
+    roles: list[str] | str = Field(default_factory=list)
+    tools: list[str] | str = Field(default_factory=list)
+    preconditions: str = Field(default="", max_length=4_000)
+    procedure: str = Field(default="", max_length=4_000)
+    expected: str = Field(default="", max_length=4_000)
+    observed: str = Field(default="", max_length=4_000)
+    common_errors: str = Field(default="", max_length=4_000)
+    troubleshooting: str = Field(default="", max_length=4_000)
+    result: str = Field(default="", max_length=20)
+    scope: str = Field(default="", max_length=300)
+    review: bool = False
 
 
 class MemoryUpdateIn(BaseModel):
@@ -186,6 +203,35 @@ class MemoryUpdateIn(BaseModel):
     tags: list[str] | str | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     helpful: bool | None = None
+    category: str | None = None
+    roles: list[str] | str | None = None
+    tools: list[str] | str | None = None
+    preconditions: str | None = Field(default=None, max_length=4_000)
+    procedure: str | None = Field(default=None, max_length=4_000)
+    expected: str | None = Field(default=None, max_length=4_000)
+    observed: str | None = Field(default=None, max_length=4_000)
+    common_errors: str | None = Field(default=None, max_length=4_000)
+    troubleshooting: str | None = Field(default=None, max_length=4_000)
+    result: str | None = Field(default=None, max_length=20)
+    status: str | None = Field(default=None, max_length=20)
+    scope: str | None = Field(default=None, max_length=300)
+
+
+class LearningUsageIn(BaseModel):
+    """Record that a lesson was consulted, and whether it actually helped."""
+
+    action: Literal["reference", "used", "success", "failure"] = "reference"
+    agent: str = Field(default="operator", max_length=80)
+    run_id: str = Field(default="", max_length=80)
+    detail: str = Field(default="", max_length=300)
+
+
+class LearningReviewIn(BaseModel):
+    """Validation decision.  ``reviewer`` is mandatory by design."""
+
+    status: Literal["proposed", "observed", "validated", "deprecated"] = "validated"
+    reviewer: str = Field(min_length=1, max_length=80)
+    note: str = Field(default="", max_length=200)
 
 
 class SkillIn(BaseModel):

@@ -898,10 +898,16 @@ button.danger:hover,
 .artifact:hover { border-color: rgba(52, 211, 153, 0.5); }
 
 
-/* ---------------- memory + skills panels ---------------- */
+/* ---------------- learning board + skills panels ---------------- */
 .sidebar .memory-form {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+.sidebar .memory-form .memory-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 6px;
 }
 .sidebar .memory-form select,
@@ -917,13 +923,70 @@ button.danger:hover,
   outline: none;
   min-width: 0;
 }
+.sidebar .memory-form input#memoryTitle,
 .sidebar .memory-form textarea {
   grid-column: 1 / -1;
+}
+.sidebar .memory-form textarea {
   resize: vertical;
 }
+.sidebar .memory-form .memory-check {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.sidebar .memory-form .memory-check input { width: 13px; height: 13px; }
+.sidebar .memory-form button { grid-column: 2 / 3; justify-self: end; }
 .sidebar .memory-form input:focus,
 .sidebar .memory-form textarea:focus,
 .sidebar .memory-form select:focus { border-color: rgba(52, 211, 153, 0.45); }
+
+.sidebar .memory-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  margin-top: 8px;
+}
+.sidebar .memory-filters input,
+.sidebar .memory-filters select {
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10px;
+  outline: none;
+  min-width: 0;
+}
+.sidebar .memory-filters input { grid-column: 1 / -1; }
+.sidebar .memory-filters input:focus,
+.sidebar .memory-filters select:focus { border-color: rgba(52, 211, 153, 0.45); }
+
+.mem-badge {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 6px;
+  flex: none;
+}
+.mem-badge.status-validated { color: var(--accent); border-color: rgba(52, 211, 153, 0.5); }
+.mem-badge.status-proposed { color: var(--warn); border-color: rgba(251, 191, 36, 0.4); }
+.mem-badge.status-deprecated { color: var(--dim); text-decoration: line-through; }
+.mem-badge.result-failure { color: var(--danger); border-color: rgba(248, 113, 113, 0.45); }
+.mem-badge.result-success { color: var(--accent); }
+.memory-list li[data-status="validated"] { border-left-color: var(--accent); }
+.memory-list li[data-result="failure"] { border-left-color: var(--danger); }
+.memory-list li[data-category="reporting"] { border-left-color: var(--accent-2); }
 
 /* ---------------- provider panel ---------------- */
 .sidebar .provider-form {

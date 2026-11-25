@@ -25,6 +25,7 @@ from .config import FLEET_GROUP_SIZE, FLEET_MAX_GROUPS, ROOT, Settings, get_sett
 from .core.agents import AGENT_META
 from .core.blockchain import ALL_CHAINS
 from .core.godmode import PROFILE_LABELS, locate_skill
+from .core.learning import KnowledgeBase
 from .core.orchestrator import Orchestrator
 from .core.production import EngagementContract
 from .core.tools import AGENT_TOOLS
@@ -34,6 +35,8 @@ from .schemas import (
     ChatResponse,
     EngagementIn,
     HealthOut,
+    LearningReviewIn,
+    LearningUsageIn,
     MemoryNoteIn,
     MemoryUpdateIn,
     ProviderIn,
@@ -762,6 +765,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/memory", tags=["memory"])
     async def memory_write(payload: MemoryNoteIn, request: Request) -> dict[str, Any]:
+        """Operator note (legacy path).  ``/api/learning`` is the full board API."""
         orch = _orchestrator(request)
         try:
             record = orch.memory.write(
@@ -770,8 +774,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 body=payload.body,
                 tags=payload.tags,
                 confidence=payload.confidence,
+                category=payload.category,
+                roles=payload.roles,
+                tools=payload.tools,
+                preconditions=payload.preconditions,
+                procedure=payload.procedure,
+                expected=payload.expected,
+                observed=payload.observed,
+                common_errors=payload.common_errors,
+                troubleshooting=payload.troubleshooting,
+                result=payload.result,
+                scope=payload.scope,
                 source=payload.source or "operator",
                 agent=payload.agent or "operator",
+                reviewer="operator",
+                allow_review=True,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -792,7 +809,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Edit a stored lesson - the operator reviews and corrects the fleet."""
         orch = _orchestrator(request)
         changes = payload.model_dump(exclude_unset=True, exclude_none=True)
-        record = orch.memory.update(note_id, **changes)
+        try:
+            record = orch.memory.update(note_id, reviewer="operator", **changes)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         if record is None:
             raise HTTPException(status_code=404, detail="note not found")
         orch.audit.write("memory.operator_update", note_id=note_id, fields=sorted(changes))
@@ -805,6 +825,227 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="note not found")
         orch.audit.write("memory.operator_delete", note_id=note_id)
         return {"deleted": note_id}
+
+    # -- Learning Board (structured, searchable, reviewable knowledge) ----
+    @app.get("/api/learning/categories", tags=["learning"])
+    async def learning_categories() -> dict[str, Any]:
+        """Categories, roles, statuses and the purpose of each category."""
+        return KnowledgeBase.categories()
+
+    @app.get("/api/learning/stats", tags=["learning"])
+    async def learning_stats(request: Request) -> dict[str, Any]:
+        return _orchestrator(request).memory.stats()
+
+    @app.get("/api/learning/recommend", tags=["learning"])
+    async def learning_recommend(
+        request: Request,
+        task: str = Query(default="", max_length=2_000),
+        role: str = Query(default="", max_length=20),
+        tools: str = Query(default="", max_length=300),
+        category: str = Query(default="", max_length=40),
+        limit: int = Query(default=5, ge=1, le=25),
+    ) -> dict[str, Any]:
+        """Role-aware retrieval: what this specialist should read before starting."""
+        memory = _orchestrator(request).memory
+        notes = memory.recommend(task, role=role, tools=tools, category=category, limit=limit)
+        return {
+            "count": len(notes),
+            "task": task,
+            "role": role,
+            "notes": notes,
+            "digest": memory.render(notes, chars=2_500),
+        }
+
+    @app.get("/api/learning", tags=["learning"])
+    async def learning_list(
+        request: Request,
+        query: str = Query(default="", max_length=400),
+        kind: str = Query(default="", max_length=20),
+        tag: str = Query(default="", max_length=60),
+        category: str = Query(default="", max_length=40),
+        role: str = Query(default="", max_length=20),
+        tool: str = Query(default="", max_length=60),
+        status: str = Query(default="", max_length=20),
+        result: str = Query(default="", max_length=20),
+        sort: str = Query(default="relevance", max_length=10),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict[str, Any]:
+        """Search, filter and rank the board."""
+        memory = _orchestrator(request).memory
+        notes = memory.search(
+            query,
+            kind=kind,
+            tag=tag,
+            category=category,
+            role=role,
+            tool=tool,
+            status=status,
+            result=result,
+            limit=limit,
+            sort=sort,
+        )
+        return {
+            "count": len(notes),
+            "notes": notes,
+            "stats": memory.stats(),
+            "filters": {
+                "query": query,
+                "kind": kind,
+                "category": category,
+                "role": role,
+                "tool": tool,
+                "status": status,
+                "result": result,
+            },
+        }
+
+    @app.post("/api/learning", tags=["learning"])
+    async def learning_create(payload: MemoryNoteIn, request: Request) -> dict[str, Any]:
+        """Create a lesson.  ``review=true`` validates it as the operator's own."""
+        orch = _orchestrator(request)
+        status = "validated" if payload.review else ""
+        try:
+            record = orch.memory.write(
+                kind=payload.kind,
+                title=payload.title,
+                body=payload.body,
+                tags=payload.tags,
+                confidence=payload.confidence,
+                category=payload.category,
+                roles=payload.roles,
+                tools=payload.tools,
+                preconditions=payload.preconditions,
+                procedure=payload.procedure,
+                expected=payload.expected,
+                observed=payload.observed,
+                common_errors=payload.common_errors,
+                troubleshooting=payload.troubleshooting,
+                status=status,
+                result=payload.result,
+                scope=payload.scope,
+                source=payload.source or "operator",
+                agent=payload.agent or "operator",
+                reviewer="operator" if payload.review else "",
+                allow_review=payload.review,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        orch.audit.write(
+            "learning.create",
+            note_id=record.get("id"),
+            kind=record.get("kind"),
+            status=record.get("status"),
+            duplicate_of=record.get("duplicate_of", 0),
+        )
+        return {"ok": True, "note": record}
+
+    @app.get("/api/learning/{note_id}", tags=["learning"])
+    async def learning_get(note_id: int, request: Request) -> dict[str, Any]:
+        memory = _orchestrator(request).memory
+        record = memory.get(note_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="lesson not found")
+        return {
+            "note": record,
+            "related": memory.related(note_id, limit=5),
+            "versions": memory.versions(note_id, limit=20),
+            "usage": memory.usage(note_id, limit=20),
+        }
+
+    @app.put("/api/learning/{note_id}", tags=["learning"])
+    async def learning_update(
+        note_id: int, payload: MemoryUpdateIn, request: Request
+    ) -> dict[str, Any]:
+        """Operator edit.  The audit row names the operator; history is versioned."""
+        orch = _orchestrator(request)
+        changes = payload.model_dump(exclude_unset=True, exclude_none=True)
+        try:
+            record = orch.memory.update(note_id, reviewer="operator", **changes)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if record is None:
+            raise HTTPException(status_code=404, detail="lesson not found")
+        orch.audit.write("learning.update", note_id=note_id, fields=sorted(changes))
+        return {"ok": True, "note": record}
+
+    @app.delete("/api/learning/{note_id}", tags=["learning"])
+    async def learning_delete(note_id: int, request: Request) -> dict[str, Any]:
+        orch = _orchestrator(request)
+        if not orch.memory.delete(note_id):
+            raise HTTPException(status_code=404, detail="lesson not found")
+        orch.audit.write("learning.delete", note_id=note_id)
+        return {"deleted": note_id}
+
+    @app.get("/api/learning/{note_id}/related", tags=["learning"])
+    async def learning_related(
+        note_id: int, request: Request, limit: int = Query(default=5, ge=1, le=20)
+    ) -> dict[str, Any]:
+        memory = _orchestrator(request).memory
+        if memory.get(note_id) is None:
+            raise HTTPException(status_code=404, detail="lesson not found")
+        notes = memory.related(note_id, limit=limit)
+        return {"count": len(notes), "notes": notes}
+
+    @app.get("/api/learning/{note_id}/versions", tags=["learning"])
+    async def learning_versions(
+        note_id: int, request: Request, limit: int = Query(default=50, ge=1, le=200)
+    ) -> dict[str, Any]:
+        memory = _orchestrator(request).memory
+        if memory.get(note_id) is None:
+            raise HTTPException(status_code=404, detail="lesson not found")
+        versions = memory.versions(note_id, limit=limit)
+        return {"count": len(versions), "versions": versions}
+
+    @app.post("/api/learning/{note_id}/usage", tags=["learning"])
+    async def learning_usage(
+        note_id: int, payload: LearningUsageIn, request: Request
+    ) -> dict[str, Any]:
+        """Record a reference/success/failure signal for a lesson."""
+        orch = _orchestrator(request)
+        try:
+            record = orch.memory.record_usage(
+                note_id,
+                action=payload.action,
+                agent=payload.agent,
+                run_id=payload.run_id,
+                detail=payload.detail,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if record is None:
+            raise HTTPException(status_code=404, detail="lesson not found")
+        orch.audit.write(
+            "learning.usage", note_id=note_id, action=payload.action, agent=payload.agent
+        )
+        return {"ok": True, "note": record}
+
+    @app.post("/api/learning/{note_id}/review", tags=["learning"])
+    async def learning_review(
+        note_id: int, payload: LearningReviewIn, request: Request
+    ) -> dict[str, Any]:
+        """Validate, observe or deprecate a lesson.  ``reviewer`` is required."""
+        orch = _orchestrator(request)
+        try:
+            record = orch.memory.review(
+                note_id,
+                status=payload.status,
+                reviewer=payload.reviewer,
+                note=payload.note,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if record is None:
+            raise HTTPException(status_code=404, detail="lesson not found")
+        orch.audit.write(
+            "learning.review",
+            note_id=note_id,
+            status=payload.status,
+            reviewer=payload.reviewer,
+        )
+        return {"ok": True, "note": record}
+
 
     # -- agent-authored skills -------------------------------------------
     @app.get("/api/skills", tags=["skills"])

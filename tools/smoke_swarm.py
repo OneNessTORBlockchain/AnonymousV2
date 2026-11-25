@@ -90,7 +90,7 @@ def test_planner(tmp: Path) -> None:
         objective="map the three ATM web services and prove the riskiest finding",
         session_id="s1",
         categories=("recon", "web", "exploit", "coder", "reporter"),
-        lanes_per_category=6,
+        lanes_per_category=5,
         rounds=2,
         model="test-model",
         root=tmp / "run",
@@ -98,16 +98,16 @@ def test_planner(tmp: Path) -> None:
         budget_tokens=100_000,
         budget_seconds=600,
     )
-    check("six lanes per category", len(run.lanes) == 30, str(len(run.lanes)))
-    check("every lane has its own terminal", len({lane.workdir for lane in run.lanes}) == 30)
+    check("five lanes per category", len(run.lanes) == 25, str(len(run.lanes)))
+    check("every lane has its own terminal", len({lane.workdir for lane in run.lanes}) == 25)
     check(
         "every lane has its own browser profile",
-        len({lane.browser_profile for lane in run.lanes}) == 30,
+        len({lane.browser_profile for lane in run.lanes}) == 25,
     )
     plan = _plan_from({}, run, 1)
     missions = [task.mission for task in plan.tasks.values()]
-    check("planner assigns every lane without a model", len(plan.tasks) == 30, str(len(plan.tasks)))
-    check("no duplicated missions", len(set(missions)) == 30, str(len(set(missions))))
+    check("planner assigns every lane without a model", len(plan.tasks) == 25, str(len(plan.tasks)))
+    check("no duplicated missions", len(set(missions)) == 25, str(len(set(missions))))
     check(
         "fallback missions quote the objective",
         all("map the three ATM web services" in mission for mission in missions),
@@ -161,7 +161,7 @@ def test_planner(tmp: Path) -> None:
     budget.charge(200)
     check("budget stops the fleet", budget.exhausted() is True)
     rendered = format_status(run.status_dict())
-    check("status rendering", "SWARM smoke" in rendered and "lanes=30" in rendered, rendered[:200])
+    check("status rendering", "SWARM smoke" in rendered and "lanes=25" in rendered, rendered[:200])
 
 
 def test_guardrails(tmp: Path) -> None:
@@ -410,7 +410,13 @@ def test_enforcement(tmp: Path) -> None:
         status = await doomed_boss.wait(doomed.run_id, timeout=120)
         check(
             "empty stops terminate the lane",
-            sorted(status["enforcement"]["terminated"]) == ["agent-1", "agent-2"],
+            sorted(status["enforcement"]["terminated"]) == [
+                "agent-1",
+                "agent-2",
+                "agent-3",
+                "agent-4",
+                "agent-5",
+            ],
             str(status["enforcement"]),
         )
         check("termination is not completion", status["status"] == "terminated", status["status"])
@@ -447,7 +453,7 @@ def test_enforcement(tmp: Path) -> None:
         check(
             "the failed run names DNS and the host",
             "DNS lookup failed" in (status["error"] or "")
-            and "api.venice.ai" in (status["error"] or ""),
+            and "host cannot resolve" in (status["error"] or ""),
             status["error"] or "",
         )
         check("no round was dispatched", dead.round == 0, f"round={dead.round}")

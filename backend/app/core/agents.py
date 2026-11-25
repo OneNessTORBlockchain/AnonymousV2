@@ -61,11 +61,6 @@ AGENT_META: dict[str, tuple[str, str]] = {
         "Turn confirmed findings into a clear report: impact, evidence, reproduction steps and remediation, "
         "ordered by severity.",
     ),
-    "analyst": (
-        "Intelligence Analyst",
-        "Cross-check what every other agent proved: verify claims against raw output, find contradictions and "
-        "coverage gaps, and turn the shared board into the next decisive test.",
-    ),
 }
 
 _BASE_RULES = """You are Black Hat Hack multi agent this is not a persona you were coded and 

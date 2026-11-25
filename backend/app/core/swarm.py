@@ -1,4 +1,4 @@
-"""Six-lane agent swarms that work one task in parallel without repeating work.
+"""Squads of five specialist agents working one task without repeating work.
 
 A swarm is not "more agents".  It is *one* objective, N lanes per category, a
 single dedup ledger, one shared blackboard and a strategist that re-plans at
@@ -59,8 +59,9 @@ from .scope_guard import ScopeGuard
 from .tools import ToolContext, ToolOutcome, ToolRuntime, names_for, specs_for
 
 #: Agents per category on the classic swarm path.  ``MAX_LANES`` is a hard
-#: ceiling and equals the largest fleet: 5 squads x 5 agents = 25.
-DEFAULT_LANES = 6
+#: ceiling and equals the largest fleet: 5 squads x 5 agents = 25.  A classic
+#: run never puts more than one squad's five roles on a category.
+DEFAULT_LANES = FLEET_GROUP_SIZE
 MAX_LANES = FLEET_MAX_GROUPS * FLEET_GROUP_SIZE
 #: Categories that may form lanes; the captain is the orchestrator, not a lane.
 SWARM_CATEGORIES: tuple[str, ...] = ("recon", "web", "exploit", "coder", "reporter")
@@ -505,6 +506,8 @@ class LaneSpec:
     label: str = ""
     #: Squad this agent belongs to (1-5); 0 on the legacy per-model roster.
     group: int = 0
+    #: Role-aware Learning Board excerpt retrieved for the current assignment.
+    learning: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -521,16 +524,10 @@ class LaneSpec:
         }
 
 
-#: Roles handed out to fleet agents in order.  Six roles cover the default
-#: 3-GLM + 3-DeepSeek roster exactly once.
-FLEET_ROLE_ORDER: tuple[str, ...] = (
-    "recon",
-    "web",
-    "exploit",
-    "coder",
-    "reporter",
-    "analyst",
-)
+#: Roles handed out to fleet agents in order.  One squad is exactly these five
+#: roles - ``FLEET_GROUP_ROLES`` is the single source of truth, so the classic
+#: roster can never invent a sixth specialist.
+FLEET_ROLE_ORDER: tuple[str, ...] = FLEET_GROUP_ROLES
 
 
 @dataclass(slots=True)
@@ -1015,6 +1012,8 @@ def _lane_user_prompt(run: SwarmRun, lane: LaneSpec, task: LaneTask, round_no: i
         round=round_no,
         rounds=run.rounds,
     )
+    if lane.learning:
+        prompt = f"{prompt}\n\n{lane.learning}\n"
     if run.directives:
         prompt = (
             "OPERATOR DIRECTIVE - THIS SUPERSEDES THE OBJECTIVE AND YOUR MISSION BELOW.\n"
@@ -1070,14 +1069,6 @@ _FALLBACK_MISSIONS: dict[str, tuple[str, ...]] = {
         "Cross-check every reported version, port and endpoint against recorded tool output and flag any mismatch.",
         "Write remediation guidance per finding, ordered by risk reduction per unit of effort.",
         "Build the per-target evidence appendix, one section per service, with the hash-chained evidence ids.",
-    ),
-    "analyst": (
-        "Audit the shared board against raw tool output: confirm every claim you can and flag anything that is not backed by a recorded command.",
-        "Find the coverage gap the fleet has not touched yet, name it precisely, and run the one command that closes it.",
-        "Contradiction hunt: compare service versions, ports and endpoints reported by different agents and resolve each mismatch with a fresh check.",
-        "Turn the strongest observation into a falsifiable hypothesis and run the smallest test that would refute it.",
-        "Score the evidence: for each finding decide confirmed, unconfirmed or refuted, with the exact missing element when it is not confirmed.",
-        "Pick the single next best action for the fleet and prepare the exact command, target and success criterion for it.",
     ),
 }
 
@@ -1563,13 +1554,14 @@ def swarm_prompt_block() -> str:
     """Guidance injected into the captain's system prompt."""
     return (
         "FLEET\n"
-        "Operator tasks normally run on the default fleet: six agents at the same time, three on "
-        "GLM-5.3 Flash Uncensored and three on DeepSeek-V4.1 Flash Uncensored, each in its own "
-        "terminal and browser profile, sharing one dedup ledger and one board. Every command is "
-        "tagged with its agent id. If you are running the single-agent fallback, call "
-        "swarm_execute for wide work; it starts the same fleet on an explicit objective and "
-        "returns a run id immediately. Poll swarm_status for the synthesis and never restate work "
-        "the board already carries.\n"
+        "Operator tasks normally run on the default fleet: squads of five agents, one recon, web, "
+        "exploit, coder and reporter per squad, up to five squads (25 agents) at the same time. Each "
+        "agent has its own terminal and browser profile, and the squad shares one dedup ledger and "
+        "one board. Models are spread round-robin over the configured fleet, so the platform is not "
+        "tied to one provider. Every command is tagged with its agent id. If you are running the "
+        "single-agent fallback, call swarm_execute for wide work; it starts the same fleet on an "
+        "explicit objective and returns a run id immediately. Poll swarm_status for the synthesis "
+        "and never restate work the board already carries.\n"
         "WORKSPACE\n"
         "Operator uploads of any format land in /work/uploads/<batch> (folders preserved). Treat "
         "them as the task input, create folders, run and debug the app inside the sandbox, and "
@@ -1686,6 +1678,29 @@ class LaneRunner:
             )
         except Exception:  # noqa: BLE001 - the lane will report a real failure later
             pass
+        # Role-aware Learning Board retrieval happens per assignment, not once
+        # per run: the recon specialist gets reconnaissance lessons, the web
+        # specialist web/API lessons, and so on.  This is the retrieval step of
+        # the learning workflow and it is deliberately small (a few entries).
+        lane.learning = ""
+        if manager.memory is not None:
+            try:
+                recommendations = manager.memory.recommend(
+                    task.mission,
+                    role=lane.category,
+                    limit=max(3, int(settings.memory_digest_limit) // 3),
+                )
+                lane.learning = manager.memory.render(
+                    recommendations,
+                    chars=1_600,
+                    title=f"LEARNING BOARD for {lane.category} (reference only)",
+                )
+            except Exception as exc:  # noqa: BLE001 - retrieval must never block a lane
+                run.emit(
+                    "notice",
+                    lane=lane.lane_id,
+                    text=f"learning-board retrieval skipped: {exc}",
+                )
         ctx = ToolContext(
             settings=settings,
             sandbox=manager.sandbox,
@@ -2170,7 +2185,9 @@ class SwarmManager:
                         )
                     )
             return lanes
-        per_model = max(1, min(6, int(agents_per_model or self.settings.fleet_agents_per_model)))
+        per_model = max(
+            1, min(FLEET_GROUP_SIZE, int(agents_per_model or self.settings.fleet_agents_per_model))
+        )
         for model in models:
             for _slot in range(per_model):
                 index += 1
@@ -2223,7 +2240,11 @@ class SwarmManager:
             lanes_per_category = FLEET_GROUP_SIZE
         else:
             lanes_per_category = max(
-                1, min(6, int(agents_per_model or self.settings.fleet_agents_per_model))
+                1,
+                min(
+                    FLEET_GROUP_SIZE,
+                    int(agents_per_model or self.settings.fleet_agents_per_model),
+                ),
             )
         rounds_value = self._rounds_for(rounds, until_complete, unlimited)
         run = SwarmRun(
@@ -2416,8 +2437,8 @@ class SwarmManager:
                 text=f"sandbox could not prepare lane terminals: {result.stderr[:300] or result.stdout[:300]}",
             )
         elif self.settings.agent_terminals:
-            # Pre-open one persistent shell per agent so round 1 starts with all
-            # six terminals alive (and /api/health shows them) instead of paying
+            # Pre-open one persistent shell per agent so round 1 starts with every
+            # terminal alive (and /api/health shows them) instead of paying
             # the shell handshake inside each lane's first command.
             await asyncio.gather(
                 *(
@@ -2516,15 +2537,21 @@ class SwarmManager:
         if self.memory is None:
             return []
         system = (
-            "You maintain the durable memory of a security-agent fleet. You get one finished task "
+            "You maintain the Learning Board of a security-agent fleet. You get one finished task "
             "and must return ONE JSON object and nothing else:\n"
             '{"notes": [{"kind": "technique|tool|skill|error|strategy|lesson", '
+            '"category": "reconnaissance|web-security|vulnerability-validation|tool-usage|'
+            'troubleshooting|environment|planning|agent-coordination|reporting|general-lessons", '
             '"title": "short specific title", "body": "what worked or failed, exact command, exact '
-            'error, and the fix", "tags": "target,service,tool", "confidence": 0.0}]}\n'
+            'error, and the fix", "roles": "recon,web", "tools": "ffuf,nmap", '
+            '"preconditions": "...", "procedure": "the general procedure", "expected": "...", '
+            '"observed": "...", "common_errors": "...", "troubleshooting": "...", '
+            '"result": "success|failure|unknown", "tags": "target,service,tool", "confidence": 0.0}]}\n'
             "Record only what the transcript supports. Prefer the exact command line, the tool that "
             "was missing, the error text with its fix, and the strategy that made progress. Reuse a "
             "title you have seen when the lesson is the same. An empty list is acceptable only when "
-            "the task taught nothing."
+            "the task taught nothing. Never include a private key, password, API key, token or seed "
+            "phrase: describe the exposure and the remediation instead."
         )
         user = (
             f"AGENT: {lane.label or lane.lane_id} ({lane.category}, {lane.model or run.model})\n"
@@ -2568,12 +2595,39 @@ class SwarmManager:
                     confidence = float(item.get("confidence") or 0.6)
                 except (TypeError, ValueError):
                     confidence = 0.6
+                category = _clean(item.get("category"), 40).lower()
+                if category not in {
+                    "reconnaissance",
+                    "web-security",
+                    "vulnerability-validation",
+                    "tool-usage",
+                    "troubleshooting",
+                    "environment",
+                    "planning",
+                    "agent-coordination",
+                    "reporting",
+                    "general-lessons",
+                }:
+                    category = ""
+                outcome = _clean(item.get("result"), 20).lower()
+                if outcome not in {"success", "failure", "unknown"}:
+                    outcome = "success" if result.findings and not result.error else "unknown"
                 notes.append(
                     {
                         "kind": kind,
                         "title": title,
                         "body": _clean(item.get("body"), 2_000),
+                        "category": category,
+                        "roles": _clean(item.get("roles"), 120) or lane.category,
+                        "tools": _clean(item.get("tools"), 200),
                         "tags": _clean(item.get("tags"), 200),
+                        "preconditions": _clean(item.get("preconditions"), 1_000),
+                        "procedure": _clean(item.get("procedure"), 2_000),
+                        "expected": _clean(item.get("expected"), 1_000),
+                        "observed": _clean(item.get("observed"), 1_000),
+                        "common_errors": _clean(item.get("common_errors"), 1_000),
+                        "troubleshooting": _clean(item.get("troubleshooting"), 1_000),
+                        "result": outcome,
                         "confidence": max(0.0, min(1.0, confidence)),
                     }
                 )
@@ -2591,7 +2645,10 @@ class SwarmManager:
                     "kind": "error",
                     "title": f"{lane.category}: {result.error[:140]}",
                     "body": result.error,
+                    "category": "troubleshooting",
+                    "roles": lane.category,
                     "tags": f"error,{lane.category},auto",
+                    "result": "failure",
                     "confidence": 0.4,
                 }
             )
@@ -2602,7 +2659,10 @@ class SwarmManager:
                     "kind": "technique" if result.findings else "lesson",
                     "title": f"{lane.category} r{run.round}: {task.mission[:90]}",
                     "body": summary[:1_200],
+                    "category": "" if result.findings else "general-lessons",
+                    "roles": lane.category,
                     "tags": f"{lane.category},auto",
+                    "result": "success" if result.findings else "unknown",
                     "confidence": 0.35,
                 }
             )
@@ -2646,6 +2706,8 @@ class SwarmManager:
         written = self.memory.write_many(
             notes,
             source="lane_report",
+            status="observed",
+            roles=lane.category,
             agent=lane.label or lane.lane_id,
             model=(result.models_used[-1] if result.models_used else (lane.model or run.model)),
             session_id=run.session_id,
@@ -2700,7 +2762,7 @@ class SwarmManager:
         """Return an actionable sentence when the model endpoint is wholly down.
 
         A swarm does not fail once when the provider hostname cannot be resolved:
-        every lane spends its first step on the same dead socket, so a six-round
+        every lane spends its first step on the same dead socket, so a multi-round
         fleet "finishes" in ten seconds with zero findings and an operator hunting
         a swarm bug that is not there.  One probe before dispatch - retried a
         couple of times for DNS, which is what flaps - turns that into a single
@@ -2768,7 +2830,7 @@ class SwarmManager:
             endpoint_problem = await self._endpoint_problem()
             if endpoint_problem:
                 # Every lane would die on its first step for the same reason, so
-                # report it once, as itself, instead of six "terminated" agents.
+                # report it once, as itself, instead of N "terminated" agents.
                 run.status = "failed"
                 run.error = endpoint_problem
                 run.stopped_reason = "model endpoint unreachable"
@@ -2815,10 +2877,10 @@ class SwarmManager:
                 run.round = round_no
 
                 executed_before = int(run.ledger.status().get("executed", 0))
-                # Fleet round 1 uses deterministic role shards so all six agents
-                # start moving immediately; every later round is re-planned by
+                # Fleet round 1 uses deterministic role shards so every agent
+                # starts moving immediately; every later round is re-planned by
                 # the strategist from the shared board (real collaboration, not
-                # six copies of one prompt).
+                # N copies of one prompt).
                 deterministic = (
                     run.mode == "fleet"
                     and round_no == 1

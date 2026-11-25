@@ -6,13 +6,14 @@ the first run zero-config: the model endpoint defaults to Venice AI cloud and
 the Kali VM is driven through the Docker CLI, so no Python docker socket
 binding is required on the host.
 
-The planner runs on **GLM-5.3 Flash Uncensored** and every task is fanned out
-to a six-agent fleet served by Venice AI (``https://api.venice.ai/api/v1``):
-three agents on ``glm-5-3-flash-uncensored`` and three on
-``deepseek-v4-1-flash-1017-uncensored``.  Venice speaks the OpenAI
-chat-completions protocol, so :class:`app.core.ollama_client.OllamaClient`
-switches to ``/chat/completions`` whenever :attr:`Settings.openai_style` is
-true.  Point ``AV2_OLLAMA_BASE_URL`` back at a local Ollama daemon (with
+The planner runs on the configured planner model and every task is fanned out
+to **squads of five specialists** (recon, web, exploit, coder, reporter), one to
+five squads per run, so 5-25 agents work at the same time.  Models are handed
+out round-robin across ``AV2_FLEET_MODELS``, so the same squad can already be
+spread over several providers.  Venice speaks the OpenAI chat-completions
+protocol, so :class:`app.core.ollama_client.OllamaClient` switches to
+``/chat/completions`` whenever :attr:`Settings.openai_style` is true.  Point
+``AV2_OLLAMA_BASE_URL`` back at a local Ollama daemon (with
 ``AV2_LLM_PROVIDER=ollama``) to run fully local again.
 
 The Venice key is **not** stored in this file: set ``AV2_LLM_API_KEY`` in the

@@ -124,23 +124,90 @@
 
         <section class="memory">
           <h2>
-            Memory
+            Learning Board
             <button id="memoryRefresh" class="ghost mini" type="button">refresh</button>
           </h2>
           <form id="memoryForm" class="memory-form">
-            <select id="memoryKind" title="what kind of lesson">
-              <option value="technique" selected>technique</option>
-              <option value="tool">tool</option>
-              <option value="skill">skill</option>
-              <option value="error">error</option>
-              <option value="strategy">strategy</option>
-              <option value="lesson">lesson</option>
-            </select>
+            <div class="memory-row">
+              <select id="memoryKind" title="what kind of lesson">
+                <option value="technique" selected>technique</option>
+                <option value="tool">tool</option>
+                <option value="skill">skill</option>
+                <option value="error">error</option>
+                <option value="strategy">strategy</option>
+                <option value="lesson">lesson</option>
+              </select>
+              <select id="memoryCategory" title="knowledge category">
+                <option value="">auto category</option>
+                <option value="reconnaissance">reconnaissance</option>
+                <option value="web-security">web-security</option>
+                <option value="vulnerability-validation">vulnerability-validation</option>
+                <option value="tool-usage">tool-usage</option>
+                <option value="troubleshooting">troubleshooting</option>
+                <option value="environment">environment</option>
+                <option value="planning">planning</option>
+                <option value="agent-coordination">agent-coordination</option>
+                <option value="reporting">reporting</option>
+                <option value="general-lessons">general-lessons</option>
+              </select>
+            </div>
+            <div class="memory-row">
+              <select id="memoryRoles" title="specialist roles this lesson applies to">
+                <option value="">all roles</option>
+                <option value="recon">recon</option>
+                <option value="web">web</option>
+                <option value="exploit">exploit</option>
+                <option value="coder">coder</option>
+                <option value="reporter">reporter</option>
+              </select>
+              <input id="memoryTools" placeholder="tools: ffuf,nmap" autocomplete="off" />
+            </div>
             <input id="memoryTitle" placeholder="title - e.g. ffuf hangs behind Tor" autocomplete="off" />
             <textarea id="memoryBody" rows="2" placeholder="exact command, exact error, the fix…"></textarea>
+            <label class="memory-check">
+              <input id="memoryReview" type="checkbox" />
+              <span>validated (operator review)</span>
+            </label>
             <button class="mini" type="submit">save</button>
           </form>
-          <p id="memoryStats" class="hint">knowledge base: —</p>
+          <div class="memory-filters">
+            <input id="memoryQuery" placeholder="search lessons…" autocomplete="off" />
+            <select id="memoryFilterCategory" title="filter by category">
+              <option value="">all categories</option>
+              <option value="reconnaissance">reconnaissance</option>
+              <option value="web-security">web-security</option>
+              <option value="vulnerability-validation">vulnerability-validation</option>
+              <option value="tool-usage">tool-usage</option>
+              <option value="troubleshooting">troubleshooting</option>
+              <option value="environment">environment</option>
+              <option value="planning">planning</option>
+              <option value="agent-coordination">agent-coordination</option>
+              <option value="reporting">reporting</option>
+              <option value="general-lessons">general-lessons</option>
+            </select>
+            <select id="memoryFilterRole" title="filter by specialist role">
+              <option value="">all roles</option>
+              <option value="recon">recon</option>
+              <option value="web">web</option>
+              <option value="exploit">exploit</option>
+              <option value="coder">coder</option>
+              <option value="reporter">reporter</option>
+            </select>
+            <select id="memoryFilterStatus" title="filter by validation status">
+              <option value="">any status</option>
+              <option value="proposed">proposed</option>
+              <option value="observed">observed</option>
+              <option value="validated">validated</option>
+              <option value="deprecated">deprecated</option>
+            </select>
+            <select id="memoryFilterResult" title="filter by outcome">
+              <option value="">any outcome</option>
+              <option value="success">success</option>
+              <option value="failure">failure</option>
+              <option value="unknown">unknown</option>
+            </select>
+          </div>
+          <p id="memoryStats" class="hint">learning board: —</p>
           <ul id="memoryList" class="memory-list"></ul>
         </section>
 

@@ -78,7 +78,7 @@ class Orchestrator:
         self.skills = SkillVault(settings, self.sandbox)
         #: Mechanical engagement guardrails (lab annotates, production enforces).
         self.production = GuardrailEngine(settings)
-        #: Six-lane-per-category swarms, one dedup ledger per run.
+        #: One squad of five specialists per category, one dedup ledger per run.
         self.swarm = SwarmManager(
             settings,
             sandbox=self.sandbox,
