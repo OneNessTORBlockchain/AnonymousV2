@@ -376,8 +376,8 @@ plan (`-OllamaModel` is never passed, so Ollama is not installed on the box at a
 ### The fleet bug this exposed
 
 `AV2_FLEET_MODELS` defaults to the two **Venice** ids (`config.py` `CLOUD_MODEL` +
-`DEEPSEEK_MODEL`). A GLM-only box serves one id, so the default fleet sent three of
-its six lanes to a DeepSeek model the instance does not have: those lanes fail while
+`DEEPSEEK_MODEL`). A GLM-only box serves one id, so the default fleet spread its
+lanes over a DeepSeek model the instance does not have: those lanes fail while
 GLM answers and every report comes back half-empty. `connect_av2.ps1` now writes
 `AV2_FLEET_MODELS=<the one id>` and `AV2_FLEET_AGENTS_PER_MODEL=3`, so the fleet is
 1 model x 3 lanes of GLM.

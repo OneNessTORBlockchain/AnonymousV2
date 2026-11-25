@@ -1,6 +1,37 @@
-# Status — 2026-11-20
+# Status — 2026-11-25
 
-## Running now
+## Current state
+
+| area | state |
+| --- | --- |
+| fleet | **squads of five** (`recon, web, exploit, coder, reporter`), 1–5 squads = 5–25 agents; single source of truth `FLEET_GROUP_ROLES` in `backend/app/config.py` |
+| retired | the sixth `analyst` lane; cross-checking is now the strategist's board audit plus the completion gate |
+| rounds | 1–50, "until complete" (cap `AV2_FLEET_MAX_ROUNDS=50`) and "until done" (ceiling `AV2_FLEET_UNLIMITED_ROUNDS=10000`) |
+| provider | provider-agnostic; the current `.env` points at Ollama Cloud (`provider=openai`, `deepseek-v4.1-flash:cloud`) with the key set. Venice/OpenAI-compatible/local Ollama paths remain supported |
+| Learning Board | structured, searchable, versioned SQLite board (`backend/app/core/learning.py`) with `/api/learning/...`, role-aware retrieval before every lane task and a **Learning Board** panel in the UI |
+| tools | `memory_search`, `memory_write` (structured) and `memory_feedback`; `skill_create/run/list`; all five specialists share the toolbox |
+| tests | `cd backend; python -m pytest -q` → **47 passed** (context window, squad contract/roster/API limits, Learning Board persistence/dedup/review/secrets/migration) |
+| frontend | `node --check frontend/app.js` clean; `/` serves the Learning Board panel, `/browser.png` is the brand mark |
+| sandbox | requires Docker (`av2-kali` + `av2-tor`); when Docker is absent the API reports `status=degraded` and no lane can execute commands |
+
+Verification for this release:
+
+```
+python -m pytest -q                         47 passed
+GET  /api/learning/categories               10 categories, 5 roles, 4 statuses
+GET  /api/learning/stats                    total / validated / pending / flags
+POST /api/learning                          create (proposed), merge duplicates
+POST /api/learning/1/review                 reviewer required; 422 without one
+GET  /api/learning/recommend?role=recon     role-aware retrieval + rendered digest
+GET  /api/learning/{id}                     entry + related + versions + usage
+POST /api/learning/{id}/usage               success/failure/reference signal
+GET  /api/swarm                             defaults: groups, group_size=5, max_groups=5
+```
+
+Details of the architecture: [README](../README.md), [SWARM](SWARM.md),
+[LEARNING-BOARD](LEARNING-BOARD.md).
+
+## Running now (2026-11-20 snapshot)
 
 | item            | value |
 |-----------------|-------|
@@ -236,7 +267,12 @@ prefixed with `proxychains4`; if `av2-tor` is down the mode degrades to
 `direct` and both `/api/health` and `start.ps1` say so.  Opt out with
 `AV2_SANDBOX_EGRESS=direct`.
 
-## Default fleet: 3 + 3 agents on every task (2026-11-20, current)
+## Historical: the 2026-11-20 six-agent fleet (retired)
+
+> Superseded on 2026-11-25: the roster is now **five** specialists per squad and
+> the `analyst` lane is retired (its review duty moved to the strategist and the
+> completion gate). This section is kept as the record of the earlier shape and
+> the live run that validated it.
 
 `POST /api/chat` no longer runs one captain.  Every non-conversational turn is
 dispatched to a fixed six-agent roster, all at the same time:
@@ -257,13 +293,13 @@ dispatched to a fixed six-agent roster, all at the same time:
   outlives its timeout.  `/api/health` → `agent_terminals`, `GET /api/fleet` →
   `terminals`.
 * **Own browser per agent** — `/work/fleet/<run>/agent-N/.browser` cookie jar
-  and body cache, so six web agents hold six independent sessions.
+  and body cache, so each web agent holds its own independent session.
 * **One dedup ledger** — `run_command` keyed by normalised command line,
   `browser` by method + URL + body, everything else by its JSON arguments.  A
   second agent's identical call is not executed: it waits for the owner and
   receives the recorded result with `duplicate=true`.
-* **One board + strategist** — round 1 is deterministic role shards (all six
-  start immediately), round 2 is re-planned by the GLM planner from the board,
+* **One board + strategist** — round 1 is deterministic role shards (every agent
+  starts immediately), round 2 is re-planned by the planner from the board,
   then a synthesis report.
 * **Tagged events** — every `agent`, `tool_call`, `tool_result` and `token`
   carries `agent="Agent 3 · exploit · deepseek…"` plus `data.label`,
@@ -324,10 +360,11 @@ final answer               3.5 k-char synthesis, status=completed
 
 ## Swarm execution (2026-11-20, wider category mode)
 
-One task can now be worked by a fleet: **6 agents per category** (recon, web,
-exploit, coder, reporter = 30 lanes), each with its own terminal directory and
+One task can now be worked by a fleet: **5 agents per category** (recon, web,
+exploit, coder, reporter = 25 lanes), each with its own terminal directory and
 browser profile, all sharing one dedup ledger and one board that a strategist
-re-plans from between rounds.  Details: `docs/SWARM.md`.
+re-plans from between rounds.  (This paragraph originally said 6 per category /
+30 lanes; the 2026-11-25 squad contract clamps a category to one squad of five.)  Details: `docs/SWARM.md`.
 
 * code: `backend/app/core/swarm.py` (`SwarmManager`, `SwarmRun`, `SwarmLedger`,
   `SwarmMemory`, `LaneSpec`, `SwarmStrategist`); `tools.py` gained `browser`,
@@ -505,6 +542,65 @@ POST /api/swarm groups=0|6          -> 422 (ceiling is 5 squads)
 POST /api/swarm lanes=6, rounds=51  -> 422 (ceiling is one squad / 50 rounds)
 _fleet_roster groups 1..5           -> 5/10/15/20/25 lanes, unique ids, [i]*5 groups
 _rounds_for until / unlimited       -> 50 / 10000
-python -m pytest -q                 -> 15 passed
+python -m pytest -q                 -> 15 passed (previous release; 47 in the current one)
+```
+
+## Learning Board upgrade (2026-11-25)
+
+The old flat "Memory" note table is now a structured Learning Board.
+`backend/app/core/memory.py` re-exports `backend/app/core/learning.py`, so old
+imports (`KINDS`, `KnowledgeBase`, `utc_now`) keep working and the existing
+database is migrated in place.
+
+* **Schema**: entries carry category, tags, roles, tools, preconditions,
+  procedure, expected/observed result, common errors, troubleshooting, status,
+  outcome, confidence, attribution, timestamps, usage counters, version, review
+  fields, flags and scope. New tables `note_versions` and `note_usage` keep
+  history and usage signals. `_ensure()` adds missing columns and backfills old
+  rows, then creates the indexes.
+* **Validation**: `proposed -> observed -> validated -> deprecated`. Agent writes
+  cannot set `validated`; `review()` requires a named reviewer; three failed
+  references flag `needs-review`; `deprecated` entries are never recommended.
+* **De-duplication**: exact `kind` + canonical title, and near-duplicates at
+  >= 0.82 token similarity are merged (both bodies kept, tags/roles/tools unioned,
+  version bumped). Opposite outcomes on similar entries are flagged as
+  contradictions.
+* **Retrieval**: `recommend(task, role, tools, category, limit)` is called per lane
+  assignment; the rendered block is role-specific, bounded and labelled
+  reference-only. Ranking is local token weighting + synonym expansion +
+  confidence/usage bonuses (no external vector store).
+* **Automatic learning**: `report_knowledge` now asks for structured fields and
+  stores lane notes as `observed`; the deterministic fallback also records
+  category, roles and result.
+* **Agent tools**: `memory_write` gained the structured fields, `memory_search`
+  gained role/category/tool/status/result filters and role-aware ranking, and
+  `memory_feedback` records success/failure.
+* **Safety**: secrets are redacted on every write; instruction-like content is
+  flagged and omitted from prompts; entries cannot override system instructions,
+  scope, tool permissions or sandbox rules.
+* **API + UI**: `/api/learning` (list/create), `/api/learning/{id}` (detail,
+  edit, delete, related, versions, usage), `/api/learning/recommend`,
+  `/api/learning/stats`, `/api/learning/categories`,
+  `/api/learning/{id}/review`, `/api/learning/{id}/usage`. The sidebar panel is
+  now **Learning Board** with search, category/role/status/outcome filters,
+  badges, validate/deprecate/related actions and a stats line.
+
+Verified in this release:
+
+```
+python -m pytest -q                                 -> 47 passed
+tests/test_fleet_architecture.py                    -> 12 passed
+tests/test_learning_board.py                        -> 20 passed
+node --check frontend/app.js                        -> clean
+GET  /api/learning/categories                       -> 10 categories, 5 roles
+GET  /api/learning/stats                            -> migrated 5026 existing notes
+POST /api/learning (with secrets)                   -> proposed, redactions=2
+POST /api/learning (same title)                     -> merged, version 2
+POST /api/learning/1/review (no reviewer)           -> 422
+POST /api/learning/1/review reviewer=operator       -> validated, version 3
+GET  /api/learning?role=recon&status=validated      -> filtered result
+GET  /api/learning/recommend?role=recon             -> ranked lesson + digest
+POST /api/learning/1/usage success                  -> uses=1, successes=1, conf=0.75
+GET  /                                              -> Learning Board panel served
 ```
 

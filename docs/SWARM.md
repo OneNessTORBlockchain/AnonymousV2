@@ -31,6 +31,21 @@ reporter) and starts with every one enabled.  `AV2_SWARM_CATEGORIES` only sets
 the default for API callers that omit `categories`; it never hides a role from
 the swarm form.
 
+### Squad contract (single source of truth)
+
+`FLEET_GROUP_ROLES` in `backend/app/config.py` is the only definition of the
+active roster: `recon, web, exploit, coder, reporter`. `FLEET_GROUP_SIZE` derives
+from it, `FLEET_ROLE_ORDER` in `swarm.py` is an alias of it, and the classic
+`lanes` value is clamped to `FLEET_GROUP_SIZE`. The legacy `agents` field
+(`POST /api/chat`, `POST /api/swarm`) is accepted only as **1-5** agents per
+model and can never create a sixth specialist.
+
+There is no `analyst` lane. The cross-check/review work it used to do is now a
+coordination duty: the strategist audits the board each round and
+`verify_completion` audits the recorded findings before a stop is accepted. The
+squad is five, the maximum is five squads (25 agents), and every schema
+(`ChatRequest`, `SwarmStartIn`) enforces that.
+
 ## The four shared structures
 
 1. **Terminal per lane** — a *persistent* `bash` inside `av2-kali`, opened as
@@ -40,8 +55,8 @@ the swarm form.
    past its timeout the shell is killed and the next call falls back to a
    one-shot `docker exec`, so one lane can never poison the others.
 2. **Browser per lane** — `/work/swarm/<run>/<lane>/.browser/{cookies.txt,last-body.txt}`.
-   The `browser` tool keeps a persistent cookie jar per lane, so six web agents
-   can hold six independent authenticated sessions.
+   The `browser` tool keeps a persistent cookie jar per lane, so each web lane
+   holds its own independent authenticated sessions.
 3. **Dedup ledger** — `storage/swarm/<run>/ledger.jsonl`, one claim per unit of
    work. `run_command` is keyed by the normalised command line, `browser` by
    method + URL + body, every other tool by its JSON arguments. A second lane
@@ -66,11 +81,10 @@ strategist.plan(...) again  (hypotheses merged, dead ends dropped)
 synthesis (markdown report, unconfirmed claims labelled)
 ```
 
-The strategist is the cloud planner model (`glm-5-3-flash-uncensored` by
-default) asked for strict JSON.  Fleet round 1 skips it and uses the
-deterministic role table so all six agents move immediately; round 2 re-plans
-from the board.  If the planner is unreachable, the same table is used and the
-fleet still runs.
+The strategist is the configured planner model asked for strict JSON.  Fleet
+round 1 skips it and uses the deterministic role table so every agent in every
+squad moves immediately; round 2 re-plans from the board.  If the planner is
+unreachable, the same table is used and the fleet still runs.
 
 The deterministic shard is never sent on its own: every fallback mission opens
 with `Objective (your whole task): <objective>.` (plus the newest operator
@@ -81,11 +95,11 @@ that contradicts the objective, and it works the template instead of the task.
 ### When the provider cannot be reached
 
 A swarm does not fail once when the model endpoint is down: every lane spends its
-first step on the same dead socket, so a six-round fleet can "finish" in ten
+first step on the same dead socket, so a multi-round fleet can "finish" in ten
 seconds with zero findings.  Before any lane is dispatched, the run probes the
 endpoint (`GET /models`, or `/api/tags` for Ollama), retrying twice for DNS and
 with a couple of seconds between attempts, and a failed probe ends the run as
-`failed` with one sentence instead of six `terminated` agents:
+`failed` with one sentence instead of N `terminated` agents:
 
 ```
 model endpoint unreachable - DNS lookup failed for api.venice.ai: this host cannot
@@ -229,31 +243,51 @@ if a free-form run should be allowed to end on prose alone.
   until success or the round cap.
 
 
-## Durable memory: what the fleet learns survives the run
+## The Learning Board: what the fleet learns survives the run
 
-`backend/app/core/memory.py` is a SQLite knowledge base at
-`storage/memory/agent_memory.sqlite3` with one table of notes:
+`backend/app/core/learning.py` is the durable, structured knowledge base at
+`storage/memory/agent_memory.sqlite3` (SQLite, WAL). `backend/app/core/memory.py`
+is a compatibility shim that re-exports it. Full reference:
+[docs/LEARNING-BOARD.md](LEARNING-BOARD.md).
 
-| kind | written when |
-| --- | --- |
-| `technique` | a command / payload / chain that worked |
-| `tool` | a tool that was installed, missing, or needed a specific flag |
-| `skill` | a reusable program an agent saved |
-| `error` | an error that must not be repeated, with the fix |
-| `strategy` | a planning idea that paid off or failed |
-| `lesson` | anything else worth keeping |
+An entry carries category, tags, specialist roles, tools, preconditions,
+procedure, expected and observed result, common errors, troubleshooting, status,
+outcome, confidence, source/agent/model, timestamps, usage counters, version and
+review fields. The legacy `kind` (`technique|tool|skill|error|strategy|lesson`)
+is retained for older callers.
 
-* Every lane receives a digest of the newest notes in its system prompt and may
-  call `memory_search` / `memory_write` during the task.
-* After **every** lane task the runner calls the agent's model with a small JSON
-  schema and stores the returned notes (`AV2_SWARM_KNOWLEDGE_REPORT=true`). When
-  the model fails or returns nothing, a deterministic note is derived from the
-  transcript, so a task always leaves a record.
-* The operator reviews, edits and deletes notes in the **Memory** panel
-  (`GET/POST/PUT/DELETE /api/memory`, `GET /api/memory/digest`). The captain's
-  system prompt carries the same digest, so the chat agents learn too.
-* `kind` + normalised `title` is the natural key: re-reporting a lesson sharpens
-  the existing note instead of duplicating it.
+* **Categories**: `reconnaissance`, `web-security`, `vulnerability-validation`,
+  `tool-usage`, `troubleshooting`, `environment`, `planning`,
+  `agent-coordination`, `reporting`, `general-lessons`.
+* **Validation**: `proposed` (agent suggestion) -> `observed` (seen in a run) ->
+  `validated` (operator review) -> `deprecated` (history only). An agent write can
+  never set `validated`, and `review()` requires a named reviewer.
+* **Role-aware retrieval**: before each assignment the runner infers the task's
+  categories, searches the board and injects a small block titled
+  `LEARNING BOARD for <role> (reference only)` into that lane's prompt. Recon gets
+  reconnaissance/tooling lessons, web gets web/API lessons, exploit gets
+  validation lessons, coder gets tooling/troubleshooting, reporter gets
+  evidence/reporting. Failed methods are included as warnings.
+* **Automatic learning**: after every lane task the runner asks the model for
+  structured notes (`AV2_SWARM_KNOWLEDGE_REPORT=true`). They are stored as
+  `observed`, never `validated`; if the call fails, a deterministic note is derived
+  from the transcript so the task still leaves a record.
+* **Agent tools**: `memory_search` (ranked, role-aware filters), `memory_write`
+  (structured, stored as `proposed`), `memory_feedback` (success/failure signal
+  that adjusts confidence and flags stale advice).
+* **De-duplication**: `kind` + canonical title is the exact key; a near-duplicate
+  (>= 0.82 token similarity) is merged into the existing entry, keeping both
+  bodies, unioning tags/roles/tools and recording a version.
+* **Safety**: secrets are redacted before storage; instruction-like text is
+  flagged and never rendered into a prompt; entries are labelled untrusted
+  reference data so they cannot override system instructions, scope, tool
+  permissions or sandbox rules.
+* **Operator controls**: the **Learning Board** panel and
+  `GET/POST/PUT/DELETE /api/learning`, `GET /api/learning/{id}` (with related
+  lessons, versions and usage), `POST /api/learning/{id}/review`,
+  `POST /api/learning/{id}/usage`, `GET /api/learning/recommend`,
+  `GET /api/learning/stats`, `GET /api/learning/categories`. The
+  `/api/memory...` paths remain as aliases.
 
 ## Agent-authored skills
 
@@ -312,10 +346,12 @@ operator directive and the agents switch to it at their next step.
   prompts, the token window scales/extends instead of ending a run, and an
   unreachable endpoint fails the run in one sentence without dispatching a
   single round or calling a single model. All pass.
-* `python tools/smoke_fleet.py` — live turn `871e7dfa5e91`: Agents 1-6 all ran
-  commands (48 tagged calls), both cloud models were used, one duplicate was
-  suppressed, all six persistent terminals stayed alive and the run completed
-  with a 3.5 k-char synthesis.
+* `python tools/smoke_fleet.py` — historical live turn `871e7dfa5e91` under the
+  previous six-lane roster: Agents 1-6 all ran commands (48 tagged calls), both
+  cloud models were used, one duplicate was suppressed, all six persistent
+  terminals stayed alive and the run completed with a 3.5 k-char synthesis. The
+  current roster is five roles per squad; the same tooling paths are covered by
+  `backend/tests/test_fleet_architecture.py`.
 * Live run `23ae21302062` (2 recon + 2 web lanes): all four reported `running`
   simultaneously at t+12 s, completed with 10 unique claims and a 5.9 k-char
   synthesis. `recon-1` recorded a confirmed finding; `/api/evidence/verify`
@@ -344,4 +380,3 @@ operator directive and the agents switch to it at their next step.
   audit per stop request (and one at the end of a run with findings), plus one
   small report per lane task. Set `AV2_SWARM_VERIFY_COMPLETION=false` or
   `AV2_SWARM_KNOWLEDGE_REPORT=false` to trim that spend.
-
