@@ -447,6 +447,7 @@ Everything is overridable from the environment with the `AV2_` prefix, or from
 | `AV2_SANDBOX_EGRESS` | `tor` | `tor` or `direct` |
 | `AV2_KALI_IMAGE` / `AV2_KALI_CONTAINER` | `oneness-kali-agent:local` / `av2-kali` | worker |
 | `AV2_SWARM_KNOWLEDGE_REPORT` | `true` | report lessons to the Learning Board after each task |
+| `AV2_LEARNING_RETRIEVAL` | `true` | inject role-aware lessons into lane prompts (false = retrieval-off A/B arm) |
 | `AV2_MEMORY_DIGEST_LIMIT` | `12` | how many lessons an agent digest may carry |
 
 ## API in one screen

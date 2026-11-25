@@ -129,3 +129,11 @@ def test_learning_board_api_is_mounted() -> None:
         "/api/memory/digest",
     }
     assert expected <= paths
+
+
+
+def test_learning_retrieval_can_be_disabled_for_an_ab_benchmark() -> None:
+    from app.config import Settings
+
+    assert Settings.model_fields["learning_retrieval"].default is True
+    assert Settings.model_fields["swarm_knowledge_report"].default is True

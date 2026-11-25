@@ -1683,7 +1683,7 @@ class LaneRunner:
         # specialist web/API lessons, and so on.  This is the retrieval step of
         # the learning workflow and it is deliberately small (a few entries).
         lane.learning = ""
-        if manager.memory is not None:
+        if manager.memory is not None and bool(getattr(settings, "learning_retrieval", True)):
             try:
                 recommendations = manager.memory.recommend(
                     task.mission,

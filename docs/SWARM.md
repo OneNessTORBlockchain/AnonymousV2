@@ -267,7 +267,8 @@ is retained for older callers.
   `LEARNING BOARD for <role> (reference only)` into that lane's prompt. Recon gets
   reconnaissance/tooling lessons, web gets web/API lessons, exploit gets
   validation lessons, coder gets tooling/troubleshooting, reporter gets
-  evidence/reporting. Failed methods are included as warnings.
+  evidence/reporting. Failed methods are included as warnings. Set
+  `AV2_LEARNING_RETRIEVAL=false` for the retrieval-off arm of an A/B benchmark.
 * **Automatic learning**: after every lane task the runner asks the model for
   structured notes (`AV2_SWARM_KNOWLEDGE_REPORT=true`). They are stored as
   `observed`, never `validated`; if the call fails, a deterministic note is derived

@@ -266,6 +266,10 @@ errors, duplicate tool executions, time to completion, successful reuse of prior
 lessons, token consumption and verified outcomes. Until that exists, the board is
 documented as a mechanism, not as a proven performance multiplier.
 
+`AV2_LEARNING_RETRIEVAL=false` disables the retrieval injection (writes still
+happen unless `AV2_SWARM_KNOWLEDGE_REPORT=false`), which gives an operator a clean
+retrieval-off control arm for such a benchmark.
+
 ## 12. Limitations
 
 - Relevance is lexical (plus synonyms), not semantic embeddings.

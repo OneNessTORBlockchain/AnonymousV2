@@ -306,6 +306,10 @@ class Settings(BaseSettings):
     #: After every lane task the agent must report what it learned (technique,
     #: tool, error, strategy) into the SQLite knowledge base.
     swarm_knowledge_report: bool = True
+    #: Inject role-aware Learning Board entries into each lane prompt.  Turn it
+    #: off (``AV2_LEARNING_RETRIEVAL=false``) to run the retrieval-off control arm
+    #: of a benchmark; writes still happen unless the report switch is off too.
+    learning_retrieval: bool = True
 
     # ---- shared knowledge base + agent skills ------------------------------
     # Every agent reads a digest of this database before a task and writes to it

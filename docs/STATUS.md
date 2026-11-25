@@ -10,14 +10,14 @@
 | provider | provider-agnostic; the current `.env` points at Ollama Cloud (`provider=openai`, `deepseek-v4.1-flash:cloud`) with the key set. Venice/OpenAI-compatible/local Ollama paths remain supported |
 | Learning Board | structured, searchable, versioned SQLite board (`backend/app/core/learning.py`) with `/api/learning/...`, role-aware retrieval before every lane task and a **Learning Board** panel in the UI |
 | tools | `memory_search`, `memory_write` (structured) and `memory_feedback`; `skill_create/run/list`; all five specialists share the toolbox |
-| tests | `cd backend; python -m pytest -q` → **47 passed** (context window, squad contract/roster/API limits, Learning Board persistence/dedup/review/secrets/migration) |
+| tests | `cd backend; python -m pytest -q` → **48 passed** (context window, squad contract/roster/API limits, Learning Board persistence/dedup/review/secrets/migration) |
 | frontend | `node --check frontend/app.js` clean; `/` serves the Learning Board panel, `/browser.png` is the brand mark |
 | sandbox | requires Docker (`av2-kali` + `av2-tor`); when Docker is absent the API reports `status=degraded` and no lane can execute commands |
 
 Verification for this release:
 
 ```
-python -m pytest -q                         47 passed
+python -m pytest -q                         48 passed
 GET  /api/learning/categories               10 categories, 5 roles, 4 statuses
 GET  /api/learning/stats                    total / validated / pending / flags
 POST /api/learning                          create (proposed), merge duplicates
@@ -542,7 +542,7 @@ POST /api/swarm groups=0|6          -> 422 (ceiling is 5 squads)
 POST /api/swarm lanes=6, rounds=51  -> 422 (ceiling is one squad / 50 rounds)
 _fleet_roster groups 1..5           -> 5/10/15/20/25 lanes, unique ids, [i]*5 groups
 _rounds_for until / unlimited       -> 50 / 10000
-python -m pytest -q                 -> 15 passed (previous release; 47 in the current one)
+python -m pytest -q                 -> 15 passed (previous release; 48 in the current one)
 ```
 
 ## Learning Board upgrade (2026-11-25)
@@ -588,8 +588,8 @@ database is migrated in place.
 Verified in this release:
 
 ```
-python -m pytest -q                                 -> 47 passed
-tests/test_fleet_architecture.py                    -> 12 passed
+python -m pytest -q                                 -> 48 passed
+tests/test_fleet_architecture.py                    -> 13 passed
 tests/test_learning_board.py                        -> 20 passed
 node --check frontend/app.js                        -> clean
 GET  /api/learning/categories                       -> 10 categories, 5 roles
