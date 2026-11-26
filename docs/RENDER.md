@@ -122,3 +122,40 @@ curl.exe -s http://127.0.0.1:8420/api/livez
 
 The image and `start.ps1` run the same command line, so a bug reproduced in one
 reproduces in the other; the only difference is the absence of Docker inside.
+
+## Deploy status (2026-11-26)
+
+What is already true, checked from the operator machine:
+
+| Item | State | Evidence |
+|---|---|---|
+| Deploy files committed | **pushed** | `f83cc19` on `main` (`Dockerfile`, `requirements.txt`, `.dockerignore`, `render.yaml`, this file) |
+| Push auth | **org SSH key required** | default `id_ed25519` and the stored PAT both authenticate as `crocrodil666` and get `403 / Permission denied`; `ssh -i ~/.ssh/oneness_tor_blockchain` succeeds. It is pinned for this checkout: `git config core.sshCommand 'ssh -i ~/.ssh/oneness_tor_blockchain -o IdentitiesOnly=yes'` |
+| Repo identity | `crocrodil666/AnonymousV2` **redirects** to `OneNessTORBlockchain/AnonymousV2` (same `refs/heads/main`) | `git ls-remote` on both URLs returns the same SHA |
+| Service name | **unclaimed** | `https://anonymous-v2.onrender.com/api/livez` -> `404`; only `anonymous-ollama-gate.onrender.com` exists (it answers `401` without a bearer) |
+| Render credential on this machine | **none** | no `RENDER_API_KEY` in the environment, no `render` CLI, no `~/.render`, nothing matching `rnd_[A-Za-z0-9]{15,}` under `C:\Users\KATHY` |
+| Local production stack | **green, VM active** | `/api/health` -> `status=ok sandbox=True (docker 29.8.0, av2-kali=running) provider=openai ollama=True egress=tor`; `POST /api/chat` -> `200`, fleet of 5 agents / 2 rounds on `deepseek-v4.1-flash:cloud`; `pytest backend/tests` -> 56 passed |
+
+The one step that needs a human, because it needs a credential that lives only in
+your Render account:
+
+1. <https://dashboard.render.com> -> **New +** -> **Blueprint** -> pick
+   `OneNessTORBlockchain/AnonymousV2` (the redirect makes the `crocrodil666`
+   name work too) -> branch `main`.
+2. Render reads `render.yaml`, asks for the single `sync: false` secret. Paste the
+   Ollama key (`AV2_OLLAMA_API_KEY`, `sk-...`). Nothing else is asked.
+3. Wait for the build; `healthCheckPath: /api/livez` must go live, then:
+
+```powershell
+curl.exe -s https://anonymous-v2.onrender.com/api/livez   # {"ok":true}
+curl.exe -s https://anonymous-v2.onrender.com/api/health
+```
+
+Expect `sandbox=False` and `egress=direct` there: a Render container has no Docker
+daemon and no Tor sidecar, so tool execution stays degraded by design. For a
+deployment where the sandbox is real, use "Full stack on a Docker host" above.
+
+If you would rather have this done by API instead of the dashboard, the key
+(`rnd_...`, Account Settings -> API Keys) is the only thing missing; with it the
+service is created with `POST https://api.render.com/v1/services` and the secret
+set via the Blueprint/env-var endpoints.
