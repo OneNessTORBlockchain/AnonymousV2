@@ -1,0 +1,67 @@
+# Render Blueprint for Anonymous V2 (Docker web service).
+#
+#   Render dashboard -> New + -> Blueprint -> pick the repo that holds this
+#   file.  Render reads the service below and asks for the secret value marked
+#   `sync: false` (the Ollama API key) before the first deploy.
+#
+# Manual alternative (no Blueprint): New + -> Web Service -> Docker, root
+# directory empty, Dockerfile path `./Dockerfile`, health check `/api/livez`.
+#
+# The repo URL matters: this checkout points at
+# `git@github.com:OneNessTORBlockchain/AnonymousV2.git`, while the deploy was
+# requested for `github.com/crocrodil666/AnonymousV2`.  Make sure the Render
+# service watches the repository that actually contains these files.
+
+services:
+  - type: web
+    name: anonymous-v2
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # /api/livez answers in milliseconds.  /api/health probes the model endpoint
+    # and the Kali container on purpose, so it must not drive Render restarts:
+    # a slow provider would otherwise look like a dead process.
+    healthCheckPath: /api/livez
+    autoDeploy: true
+    envVars:
+      # ---- model endpoint -------------------------------------------------
+      # Ollama Cloud is OpenAI-compatible *under /v1*.  The 307 that failed the
+      # last deploy was `GET https://ollama.com/models` -> /search: the bare
+      # host is a web page, not the API base.
+      - key: AV2_LLM_PROVIDER
+        value: openai
+      - key: AV2_OLLAMA_BASE_URL
+        value: https://ollama.com/v1
+      - key: AV2_OLLAMA_API_KEY
+        sync: false
+      - key: AV2_PLANNER_MODEL
+        value: deepseek-v4.1-flash:cloud
+      - key: AV2_WORKER_MODEL
+        value: deepseek-v4.1-flash:cloud
+      - key: AV2_FLEET_MODELS
+        value: deepseek-v4.1-flash:cloud
+      - key: AV2_PLANNER_NUM_CTX
+        value: "131072"
+      - key: AV2_WORKER_NUM_CTX
+        value: "131072"
+      # ---- fleet ----------------------------------------------------------
+      - key: AV2_FLEET_GROUPS
+        value: "1"
+      - key: AV2_FLEET_ROUNDS
+        value: "2"
+      # ---- sandbox --------------------------------------------------------
+      # There is no Docker daemon and no Tor sidecar inside a Render container,
+      # so the sandbox reports unavailable and egress cannot be Tor.  Leave this
+      # at `direct`; set `tor` only once the API talks to a Docker host that
+      # runs docker/docker-compose.yml (docs/RENDER.md).
+      - key: AV2_SANDBOX_EGRESS
+        value: direct
+
+    # Runtime state (storage/, audit.jsonl, findings, memory SQLite) lives on the
+    # container filesystem by default, so it resets on every deploy.  A paid
+    # instance can mount a disk instead - Render disk paths must be absolute:
+    #
+    # disk:
+    #   name: av2-storage
+    #   mountPath: /app/storage
+    #   sizeGB: 1

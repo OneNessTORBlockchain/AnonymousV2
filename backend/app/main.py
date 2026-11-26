@@ -163,6 +163,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.get("/api/livez", tags=["system"])
+    async def livez() -> dict[str, bool]:
+        """Liveness only: no model probe, no Docker, no disk.
+
+        A platform health check (Render's ``healthCheckPath``, the Dockerfile
+        ``HEALTHCHECK``) needs one route that answers in milliseconds.
+        :func:`health` below deliberately calls the model endpoint and the Kali
+        container, so a slow provider or a host without a Docker daemon would
+        look like a dead process and get the container restarted for no reason.
+        """
+        return {"ok": True}
+
     @app.get("/api/health", response_model=HealthOut, tags=["system"])
     async def health(request: Request) -> HealthOut:
         orch = _orchestrator(request)

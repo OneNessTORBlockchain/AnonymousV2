@@ -29,6 +29,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -380,6 +381,27 @@ class Settings(BaseSettings):
         return groups * FLEET_GROUP_SIZE
 
     # ---- derived paths -----------------------------------------------------
+    @property
+    def llm_base_url(self) -> str:
+        """Base URL the HTTP client actually calls, with a bare host resolved.
+
+        ``AV2_LLM_PROVIDER=openai`` (or ``venice``) makes every request
+        OpenAI-style *regardless of the base URL*, so pasting the bare provider
+        host sent ``GET https://ollama.com/models`` to the marketing site:
+        ollama.com answers ``307 -> /search`` with an empty body, the pre-flight
+        probe repeated the swarm's "check the API key" line, and a deployment
+        that was one suffix short looked like a credential problem.  Venice
+        (``/api/v1``) and the documented Ollama Cloud base (``/v1``) are already
+        versioned and pass through untouched; a base that carries any other path
+        is left alone, because that host may version its own routes.
+        """
+        base = self.ollama_base_url.strip().rstrip("/")
+        if not base or not self.openai_style:
+            return base
+        if urlsplit(base).path.strip("/"):
+            return base
+        return f"{base}/v1"
+
     @property
     def openai_style(self) -> bool:
         """Whether the endpoint speaks the OpenAI chat-completions protocol.

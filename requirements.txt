@@ -1,0 +1,17 @@
+# Anonymous V2 backend runtime dependencies.
+#
+# These five lines are the whole import surface of backend/app (fastapi,
+# pydantic, pydantic-settings, uvicorn) plus httpx for every model/blockchain
+# call; starlette arrives with fastapi.  Pinned to the versions the local
+# 2.1.0 deployment runs and tests against, so a Render build cannot drift into
+# a different pydantic resolver behaviour than the operator's machine.
+#
+#   pip install -r requirements.txt
+#   uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8420
+#
+# Optional, only for the test suite:  pip install pytest
+fastapi==0.141.1
+uvicorn[standard]==0.32.1
+httpx==0.28.1
+pydantic==2.13.5
+pydantic-settings==2.15.0

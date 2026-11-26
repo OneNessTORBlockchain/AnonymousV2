@@ -1,0 +1,39 @@
+# Build context for the Anonymous V2 image (Render Docker service, local docker
+# build).  Secrets and runtime state must never be baked into an image: Render
+# supplies the AV2_* values as environment variables instead.
+
+# --- secrets ---------------------------------------------------------------
+.env
+.env.*
+*.bak-*
+artex/.env
+# The template carries no secrets and is useful inside the image.
+!.env.example
+
+# --- git / editor / OS -----------------------------------------------------
+.git
+.gitignore
+.vscode
+*.log
+
+# --- local runtime state ---------------------------------------------------
+storage/
+tmp/
+.pytest_cache/
+**/__pycache__/
+**/*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# --- not needed inside the image -------------------------------------------
+docs/
+docker/
+tools/
+backend/tests/
+install.cmd
+install.ps1
+start.ps1
+browser.png
+test.txt
+artex-vm.ps1

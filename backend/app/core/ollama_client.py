@@ -81,8 +81,10 @@ class OllamaClient:
         return headers
 
     def _client(self, timeout: float | None = None) -> httpx.AsyncClient:
+        #: ``llm_base_url`` (not the raw setting) so a bare provider host still
+        #: reaches the versioned API instead of the provider's web page.
         return httpx.AsyncClient(
-            base_url=self.settings.ollama_base_url.rstrip("/"),
+            base_url=self.settings.llm_base_url,
             headers=self._headers(),
             timeout=httpx.Timeout(timeout or self.settings.llm_timeout_s, connect=10.0),
         )
@@ -154,6 +156,13 @@ class OllamaClient:
         the difference between a five-minute fix and a re-wire of the wrong thing.
         """
         text = (body or "").strip()
+        if 300 <= status < 400:
+            return OllamaError(
+                f"HTTP {status}: redirect - the configured base URL "
+                f"({self.settings.llm_base_url}) is a web page, not an API endpoint; "
+                "point it at the /v1 base of an OpenAI-compatible service "
+                "(Ollama Cloud https://ollama.com/v1) with AV2_LLM_PROVIDER=openai"
+            )
         if looks_like_context_overflow(text):
             return OllamaContextError(f"HTTP {status}: {text[:300]}")
         detail = text[:400] or "empty response body"
@@ -176,22 +185,43 @@ class OllamaClient:
 
 
     # -- discovery --------------------------------------------------------
+    def _redirect_hint(self, path: str, response: httpx.Response) -> str:
+        """A 3xx means the base URL is a web page, not an API endpoint.
+
+        ``GET https://ollama.com/models`` answers ``307 -> /search`` with an empty
+        body.  Forwarded verbatim that is ``HTTP 307: `` - the operator is told to
+        check the API key for what is one missing ``/v1``.
+        """
+        location = (response.headers.get("location") or "").strip()
+        target = f" to {location}" if location else ""
+        return (
+            f"HTTP {response.status_code} redirect{target} - {self.settings.llm_base_url}"
+            f"{path} is a web page, not the API; use the versioned base of an "
+            "OpenAI-compatible endpoint (Ollama Cloud https://ollama.com/v1, Venice "
+            "https://api.venice.ai/api/v1) with AV2_LLM_PROVIDER=openai"
+        )
+
     async def health(self) -> tuple[bool, str]:
         path = "/models" if self.openai_style else "/api/tags"
+        base = self.settings.llm_base_url
         try:
             async with self._client(timeout=20) as client:
                 response = await client.get(path)
         except (httpx.HTTPError, OSError) as exc:
-            return False, f"{self.settings.ollama_base_url} unreachable: {exc}"
+            return False, f"{base} unreachable: {exc}"
+        if 300 <= response.status_code < 400:
+            return False, self._redirect_hint(path, response)
         if response.status_code != 200:
             return False, f"HTTP {response.status_code}: {response.text[:200]}"
-        return True, f"{self.settings.ollama_base_url} ok"
+        return True, f"{base} ok"
 
     async def list_models(self) -> list[str]:
         path = "/models" if self.openai_style else "/api/tags"
         try:
             async with self._client(timeout=30) as client:
                 response = await client.get(path)
+                if 300 <= response.status_code < 400:
+                    raise OllamaError(self._redirect_hint(path, response))
                 response.raise_for_status()
         except (httpx.HTTPError, OSError) as exc:
             raise OllamaError(f"cannot list models: {exc}") from exc
