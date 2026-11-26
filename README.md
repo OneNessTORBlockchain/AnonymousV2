@@ -1,3 +1,11 @@
+
+
+<img width="1672" height="941" alt="Anonymous V2_ Autonomous AI Orchestration" src="https://github.com/user-attachments/assets/927a46f0-4c8c-4b94-9382-adb156be50ec" />
+
+
+
+
+
 # Anonymous V2
 
 <img src="browser.png" alt="Anonymous V2" width="96" align="right" />
